@@ -3,13 +3,13 @@
 
 #![cfg(target_arch = "x86_64")]
 
-use std::io::{stdin, Read, Stdin, Stdout, Write};
+use std::io::{stdin, Read, Stdout, Write};
 use std::result::Result;
 use std::sync::{Arc, Mutex};
 
 use event_manager::{EventManager, EventOps, Events, MutEventSubscriber};
 use vm_superio::Serial;
-use vmm_sys_util::{epoll::EventSet, eventfd::EventFd};
+use vmm_sys_util::epoll::EventSet;
 
 /// Newtype for implementing `event-manager` functionalities.
 pub(crate) struct SerialWrapper<W: Write>(pub Serial<W>);

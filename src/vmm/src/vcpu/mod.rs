@@ -3,9 +3,8 @@
 
 use std::io::{self, stdin};
 use std::result;
-use std::sync::{Arc, Mutex};
 
-use kvm_bindings::{kvm_fpu, kvm_regs, kvm_sregs, CpuId, Msrs};
+use kvm_bindings::{kvm_fpu, kvm_regs, CpuId, Msrs};
 use kvm_ioctls::{VcpuExit, VcpuFd, VmFd};
 use vm_memory::{Address, Bytes, GuestAddress, GuestMemoryError, GuestMemoryMmap};
 use vmm_sys_util::terminal::Terminal;
@@ -57,8 +56,6 @@ pub type Result<T> = result::Result<T, Error>;
 /// This struct is a temporary (and quite terrible) placeholder until the
 /// [`vmm-vcpu`](https://github.com/rust-vmm/vmm-vcpu) crate is stabilized.
 pub(crate) struct Vcpu {
-    /// Index.
-    pub index: u8,
     /// KVM file descriptor for a vCPU.
     pub vcpu_fd: VcpuFd,
     /// Shared device.
@@ -69,7 +66,6 @@ impl Vcpu {
     /// Create a new vCPU.
     pub fn new(vm_fd: &VmFd, index: u8, serial: SafeStdoutSerial) -> Result<Self> {
         Ok(Vcpu {
-            index,
             vcpu_fd: vm_fd.create_vcpu(index).map_err(Error::KvmIoctl)?,
             serial,
         })
@@ -159,12 +155,12 @@ impl Vcpu {
 
         // Entry covering VA [0..512GB).
         guest_memory
-            .write_obj(boot_pdpte_addr.raw_value() as u64 | 0x03, boot_pml4_addr)
+            .write_obj(boot_pdpte_addr.raw_value() | 0x03, boot_pml4_addr)
             .map_err(Error::GuestMemory)?;
 
         // Entry covering VA [0..1GB).
         guest_memory
-            .write_obj(boot_pde_addr.raw_value() as u64 | 0x03, boot_pdpte_addr)
+            .write_obj(boot_pde_addr.raw_value() | 0x03, boot_pdpte_addr)
             .map_err(Error::GuestMemory)?;
 
         // 512 2MB entries together covering VA [0..1GB).
@@ -175,7 +171,7 @@ impl Vcpu {
                 .map_err(Error::GuestMemory)?;
         }
 
-        sregs.cr3 = boot_pml4_addr.raw_value() as u64;
+        sregs.cr3 = boot_pml4_addr.raw_value();
         sregs.cr4 |= X86_CR4_PAE;
         sregs.cr0 |= X86_CR0_PG;
 
@@ -219,7 +215,7 @@ impl Vcpu {
                 match exit_reason {
                     VcpuExit::Shutdown | VcpuExit::Hlt => {
                         println!("Guest shutdown: {:?}. Bye!", exit_reason);
-                        if let Err(e) = stdin().lock().set_canon_mode() {
+                        if stdin().lock().set_canon_mode().is_err() {
                             eprintln!("Failed to set canon mode. Stdin will not echo.");
                         }
                         unsafe { libc::exit(0) };
@@ -227,11 +223,16 @@ impl Vcpu {
                     VcpuExit::IoOut(addr, data) => {
                         if 0x3f8 <= addr && addr < (0x3f8 + 8) {
                             // Write at the serial port.
-                            self.serial
+                            if self
+                                .serial
                                 .lock()
                                 .unwrap()
                                 .0
-                                .write((addr - 0x3f8) as u8, data[0]);
+                                .write((addr - 0x3f8) as u8, data[0])
+                                .is_err()
+                            {
+                                eprintln!("Failed to write to serial port");
+                            }
                         } else if 0x060 <= addr && addr < (0x060 + 5) {
                             // Write at the i8042 port.
                         } else if 0x070 <= addr && addr <= 0x07f {
