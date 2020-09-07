@@ -50,6 +50,9 @@ use boot::*;
 mod devices;
 use devices::{DeviceManager, SerialWrapper};
 
+mod vcpu;
+use vcpu::{mpspec, mptable};
+
 /// First address past 32 bits.
 const FIRST_ADDR_PAST_32BITS: u64 = 1 << 32;
 /// Size of the MMIO gap.
@@ -133,6 +136,8 @@ pub enum Error {
     KvmIoctl(kvm_ioctls::Error),
     /// Memory error.
     Memory(MemoryError),
+    /// vCPU errors.
+    Vcpu(vcpu::Error),
 }
 
 /// Dedicated [`Result`](https://doc.rust-lang.org/std/result/) type.
@@ -229,19 +234,6 @@ impl VMM {
         Ok(())
     }
 
-    /// Configure guest vCPUs.
-    ///
-    /// # Arguments
-    ///
-    /// * `vcpu_cfg` - [`VcpuConfig`](struct.VcpuConfig.html) struct containing vCPU configurations.
-    pub fn configure_vcpus(
-        &mut self,
-        vcpu_cfg: VcpuConfig,
-        kernel_load: KernelLoaderResult,
-    ) -> Result<()> {
-        unimplemented!();
-    }
-
     /// Configure guest kernel.
     ///
     /// # Arguments
@@ -335,6 +327,21 @@ impl VMM {
         device_mgr.serial_ev_mgr.add_subscriber(serial.clone());
         device_mgr.serial = Some(serial);
 
+        Ok(())
+    }
+
+    /// Configure guest vCPUs.
+    ///
+    /// # Arguments
+    ///
+    /// * `vcpu_cfg` - [`VcpuConfig`](struct.VcpuConfig.html) struct containing vCPU configurations.
+    pub fn configure_vcpus(
+        &mut self,
+        vcpu_cfg: VcpuConfig,
+        kernel_load: KernelLoaderResult,
+    ) -> Result<()> {
+        mptable::setup_mptable(&self.guest_memory, vcpu_cfg.num_vcpus)
+            .map_err(|e| Error::Vcpu(vcpu::Error::Mptable(e)))?;
         Ok(())
     }
 
