@@ -111,7 +111,6 @@ pub struct VMM {
     // perspective, and a dyn MutEventSubscriber from EventManager's) is managed by the 2 entities,
     // and isn't Copy-able; so once one of them gets ownership, the other one can't anymore.
     event_mgr: EventManager<Arc<Mutex<dyn MutEventSubscriber>>>,
-    vcpus: Vec<Vcpu>,
 }
 
 impl VMM {
@@ -134,7 +133,6 @@ impl VMM {
             guest_memory: GuestMemoryMmap::default(),
             device_mgr: Some(IoManager::new()),
             event_mgr: EventManager::new().map_err(Error::EventManager)?,
-            vcpus: vec![],
         };
 
         vmm.check_kvm_capabilities()?;
