@@ -26,7 +26,8 @@ use std::sync::{Arc, Mutex};
 
 use event_manager::{EventManager, EventOps, Events, MutEventSubscriber, SubscriberOps};
 use kvm_bindings::{
-    kvm_pit_config, kvm_userspace_memory_region, KVM_API_VERSION, KVM_PIT_SPEAKER_DUMMY,
+    kvm_pit_config, kvm_userspace_memory_region, KVM_API_VERSION, KVM_MAX_CPUID_ENTRIES,
+    KVM_PIT_SPEAKER_DUMMY,
 };
 use kvm_ioctls::{
     Cap::{self, Ioeventfd, Irqchip, Irqfd, SetTssAddr, UserMemory},
@@ -51,7 +52,7 @@ mod devices;
 use devices::{DeviceManager, SerialWrapper};
 
 mod vcpu;
-use vcpu::{mpspec, mptable};
+use vcpu::{cpuid, mpspec, mptable, Vcpu};
 
 /// First address past 32 bits.
 const FIRST_ADDR_PAST_32BITS: u64 = 1 << 32;
@@ -148,7 +149,8 @@ pub struct VMM {
     vm_fd: VmFd,
     kvm: Kvm,
     guest_memory: GuestMemoryMmap,
-    device_mgr: Arc<Mutex<DeviceManager>>,
+    device_mgr: DeviceManager,
+    vcpus: Vec<Vcpu>,
 }
 
 impl VMM {
@@ -169,7 +171,8 @@ impl VMM {
             vm_fd,
             kvm,
             guest_memory: GuestMemoryMmap::default(),
-            device_mgr: Arc::new(Mutex::new(DeviceManager::new().map_err(Error::Device)?)),
+            device_mgr: DeviceManager::new().map_err(Error::Device)?,
+            vcpus: vec![],
         };
 
         vmm.check_kvm_capabilities()?;
@@ -323,9 +326,8 @@ impl VMM {
             .map_err(Error::KvmIoctl)?;
 
         // Configure event management for the serial console's events.
-        let mut device_mgr = self.device_mgr.lock().unwrap();
-        device_mgr.serial_ev_mgr.add_subscriber(serial.clone());
-        device_mgr.serial = Some(serial);
+        self.device_mgr.serial_ev_mgr.add_subscriber(serial.clone());
+        self.device_mgr.serial = Some(serial);
 
         Ok(())
     }
@@ -342,6 +344,36 @@ impl VMM {
     ) -> Result<()> {
         mptable::setup_mptable(&self.guest_memory, vcpu_cfg.num_vcpus)
             .map_err(|e| Error::Vcpu(vcpu::Error::Mptable(e)))?;
+
+        let base_cpuid = self
+            .kvm
+            .get_supported_cpuid(KVM_MAX_CPUID_ENTRIES)
+            .map_err(Error::KvmIoctl)?;
+
+        for index in 0..vcpu_cfg.num_vcpus {
+            let mut vcpu = Vcpu::new(
+                &self.vm_fd,
+                index,
+                self.device_mgr
+                    .serial
+                    .clone()
+                    .expect("Remove this `expect` when the serial console becomes optional"),
+            )
+            .map_err(Error::Vcpu)?;
+
+            // Set CPUID.
+            let mut vcpu_cpuid = base_cpuid.clone();
+            cpuid::filter_cpuid(
+                &self.kvm,
+                index as usize,
+                vcpu_cfg.num_vcpus as usize,
+                &mut vcpu_cpuid,
+            );
+            vcpu.configure_cpuid(&vcpu_cpuid).map_err(Error::Vcpu)?;
+
+            self.vcpus.push(vcpu);
+        }
+
         Ok(())
     }
 

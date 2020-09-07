@@ -12,7 +12,7 @@ use vm_superio::Serial;
 use vmm_sys_util::{epoll::EventSet, eventfd::EventFd};
 
 /// Newtype for implementing `event-manager` functionalities.
-pub struct SerialWrapper<W: Write>(pub Serial<W>);
+pub(crate) struct SerialWrapper<W: Write>(pub Serial<W>);
 
 impl<W: Write> MutEventSubscriber for SerialWrapper<W> {
     fn process(&mut self, events: Events, ops: &mut EventOps) {
@@ -56,13 +56,13 @@ pub enum Error {
 }
 
 /// Shorthand for an otherwise long type name.
-pub type SafeStdoutSerial = Arc<Mutex<SerialWrapper<Stdout>>>;
+pub(crate) type SafeStdoutSerial = Arc<Mutex<SerialWrapper<Stdout>>>;
 
 /// Device manager.
 ///
 /// This struct is the likeliest candidate for change once
 /// [`vm-device`](https://github.com/rust-vmm/vm-device/) interfaces are stabilized.
-pub struct DeviceManager {
+pub(crate) struct DeviceManager {
     /// Serial console.
     pub serial: Option<SafeStdoutSerial>,
     /// Event manager for the serial console.
