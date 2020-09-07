@@ -14,15 +14,20 @@ extern crate kvm_bindings;
 extern crate kvm_ioctls;
 extern crate linux_loader;
 extern crate vm_memory;
+extern crate vm_superio;
 extern crate vmm_sys_util;
 
 use std::convert::TryFrom;
 use std::ffi::CString;
 use std::fs::File;
-use std::io;
+use std::io::{self, stdout, Stdout};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
-use kvm_bindings::{kvm_userspace_memory_region, KVM_API_VERSION};
+use event_manager::{EventManager, EventOps, Events, MutEventSubscriber, SubscriberOps};
+use kvm_bindings::{
+    kvm_pit_config, kvm_userspace_memory_region, KVM_API_VERSION, KVM_PIT_SPEAKER_DUMMY,
+};
 use kvm_ioctls::{
     Cap::{self, Ioeventfd, Irqchip, Irqfd, SetTssAddr, UserMemory},
     Kvm, VmFd,
@@ -36,9 +41,14 @@ use linux_loader::loader::{self, elf::Elf, load_cmdline, KernelLoader, KernelLoa
 use vm_memory::{
     Address, GuestAddress, GuestMemory, GuestMemoryError, GuestMemoryMmap, GuestMemoryRegion,
 };
+use vm_superio::Serial;
+use vmm_sys_util::eventfd::EventFd;
 
 mod boot;
 use boot::*;
+
+mod devices;
+use devices::{DeviceManager, SerialWrapper};
 
 /// First address past 32 bits.
 const FIRST_ADDR_PAST_32BITS: u64 = 1 << 32;
@@ -109,6 +119,8 @@ pub enum Error {
     BootParam(boot::Error),
     /// Error configuring the kernel command line.
     Cmdline(cmdline::Error),
+    /// Error setting up devices.
+    Device(devices::Error),
     /// I/O error.
     IO(io::Error),
     /// Failed to load kernel.
@@ -131,6 +143,7 @@ pub struct VMM {
     vm_fd: VmFd,
     kvm: Kvm,
     guest_memory: GuestMemoryMmap,
+    device_mgr: Arc<Mutex<DeviceManager>>,
 }
 
 impl VMM {
@@ -151,6 +164,7 @@ impl VMM {
             vm_fd,
             kvm,
             guest_memory: GuestMemoryMmap::default(),
+            device_mgr: Arc::new(Mutex::new(DeviceManager::new().map_err(Error::Device)?)),
         };
 
         vmm.check_kvm_capabilities()?;
@@ -289,7 +303,39 @@ impl VMM {
     /// * `x86_64`: serial console
     /// * `aarch64`: N/A
     pub fn configure_pio_devices(&mut self) -> Result<()> {
-        unimplemented!();
+        // First, create the irqchip.
+        // On `x86_64`, this _must_ be created _before_ the vCPUs.
+        // It sets up the virtual IOAPIC, virtual PIC, and sets up the future vCPUs for local APIC.
+        // When in doubt, look in the kernel for `KVM_CREATE_IRQCHIP`.
+        // https://elixir.bootlin.com/linux/latest/source/arch/x86/kvm/x86.c
+        self.vm_fd.create_irq_chip().map_err(Error::KvmIoctl)?;
+
+        // Set up the speaker PIT, because some kernels are musical and access the speaker port
+        // during boot. Without this, KVM would continuously exit to userspace.
+        // TODO: does this *need* the irqchip in place?
+        let mut pit_config = kvm_pit_config::default();
+        pit_config.flags = KVM_PIT_SPEAKER_DUMMY;
+        self.vm_fd
+            .create_pit2(pit_config)
+            .map_err(Error::KvmIoctl)?;
+
+        // Create the serial console.
+        let interrupt_evt = EventFd::new(libc::EFD_NONBLOCK).map_err(Error::IO)?;
+        let serial = Arc::new(Mutex::new(SerialWrapper(Serial::new(
+            interrupt_evt.try_clone().map_err(Error::IO)?,
+            stdout(),
+        ))));
+        // Register its interrupt fd with KVM.
+        self.vm_fd
+            .register_irqfd(&interrupt_evt, 4)
+            .map_err(Error::KvmIoctl)?;
+
+        // Configure event management for the serial console's events.
+        let mut device_mgr = self.device_mgr.lock().unwrap();
+        device_mgr.serial_ev_mgr.add_subscriber(serial.clone());
+        device_mgr.serial = Some(serial);
+
+        Ok(())
     }
 
     /// Run the VMM.
