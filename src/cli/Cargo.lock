@@ -143,8 +143,7 @@ dependencies = [
 [[package]]
 name = "vm-superio"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bccda4459a0c78d429aec0e3873cd388d92eed99b9968ac79104fb5be6e08f49"
+source = "git+https://github.com/rust-vmm/vm-superio#9d04e75c038259ff96bf8b95a894ddf1af838330"
 dependencies = [
  "vmm-sys-util",
 ]
@@ -161,14 +160,6 @@ dependencies = [
  "vm-memory",
  "vm-superio",
  "vmm-sys-util",
-]
-
-[[package]]
-name = "vmm-reference"
-version = "0.1.0"
-dependencies = [
- "cli",
- "vmm",
 ]
 
 [[package]]
