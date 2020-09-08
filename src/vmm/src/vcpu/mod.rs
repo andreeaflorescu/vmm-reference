@@ -209,6 +209,7 @@ impl Vcpu {
     }
 
     /// vCPU emulation loop.
+    #[allow(clippy::if_same_then_else)]
     pub fn run(&mut self) {
         match self.vcpu_fd.run() {
             Ok(exit_reason) => {
@@ -233,8 +234,9 @@ impl Vcpu {
                             {
                                 eprintln!("Failed to write to serial port");
                             }
-                        } else if 0x060 <= addr && addr < (0x060 + 5) {
+                        } else if addr == 0x060 || addr == 0x061 || addr == 0x064 {
                             // Write at the i8042 port.
+                            // See https://wiki.osdev.org/%228042%22_PS/2_Controller#PS.2F2_Controller_IO_Ports
                         } else if 0x070 <= addr && addr <= 0x07f {
                             // Write at the RTC port.
                         } else {
