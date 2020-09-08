@@ -7,13 +7,20 @@ extern crate cli;
 extern crate vmm;
 
 use std::convert::TryFrom;
+use std::env;
 
 use cli::CLI;
 use vmm::VMM;
 
 fn main() {
-    let vmm_config =
-        CLI::launch("reference-vmm".to_string()).expect("Failed to parse command line options");
+    let vmm_config = CLI::launch(
+        env::args()
+            .collect::<Vec<String>>()
+            .iter()
+            .map(|s| s.as_str())
+            .collect(),
+    )
+    .expect("Failed to parse command line options");
     let mut vmm = VMM::try_from(vmm_config).expect("Failed to create VMM from configurations");
     vmm.run();
 }
