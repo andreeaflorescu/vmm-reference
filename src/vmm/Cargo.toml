@@ -1,7 +1,7 @@
 [package]
 name = "vmm"
 version = "0.1.0"
-authors = ["Alexandra Iordache <aghecen@amazon.com>"]
+authors = ["rust-vmm AWS maintainers <rust-vmm-maintainers@amazon.com>"]
 edition = "2018"
 
 [dependencies]
@@ -10,7 +10,7 @@ kvm-bindings = { version = "0.3.0", features = ["fam-wrappers"] }
 kvm-ioctls = "0.5.0"
 linux-loader = "0.2.0"
 vm-memory = { version = "0.2.2", features = ["backend-mmap"] }
-vm-superio = { git = "https://github.com/rust-vmm/vm-superio" }
+vm-superio = "0.1.0"
 vmm-sys-util = "0.6.1"
 
 libc = "0.2.76"
