@@ -14,13 +14,10 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use event_manager::SubscriberOps;
-use kvm_bindings::{
-    kvm_pit_config, kvm_userspace_memory_region, CpuId, KVM_API_VERSION, KVM_MAX_CPUID_ENTRIES,
-    KVM_PIT_SPEAKER_DUMMY,
-};
+use kvm_bindings::{kvm_userspace_memory_region, CpuId, KVM_API_VERSION, KVM_MAX_CPUID_ENTRIES};
 use kvm_ioctls::{
     Cap::{self, Ioeventfd, Irqchip, Irqfd, SetTssAddr, UserMemory},
-    Kvm, VmFd,
+    Kvm,
 };
 use linux_loader::bootparam::boot_params;
 use linux_loader::cmdline::{self, Cmdline};
@@ -44,7 +41,9 @@ mod devices;
 use devices::{DeviceManager, SerialWrapper};
 
 mod vcpu;
+mod vm;
 use vcpu::{cpuid, mpspec, mptable, Vcpu};
+use vm::KvmVm;
 
 /// First address past 32 bits.
 const FIRST_ADDR_PAST_32BITS: u64 = 1 << 32;
@@ -52,8 +51,6 @@ const FIRST_ADDR_PAST_32BITS: u64 = 1 << 32;
 const MEM_32BIT_GAP_SIZE: u64 = 768 << 20;
 /// The start of the memory area reserved for MMIO devices.
 const MMIO_MEM_START: u64 = FIRST_ADDR_PAST_32BITS - MEM_32BIT_GAP_SIZE;
-/// Address for the TSS setup.
-const KVM_TSS_ADDRESS: u64 = 0xfffb_d000;
 /// Address of the zeropage, where Linux kernel boot parameters are written.
 const ZEROPG_START: u64 = 0x7000;
 /// Address where the kernel command line is written.
@@ -95,6 +92,14 @@ pub enum Error {
     Memory(MemoryError),
     /// vCPU errors.
     Vcpu(vcpu::Error),
+    /// VM errors.
+    Vm(vm::Error),
+}
+
+impl std::convert::From<vm::Error> for Error {
+    fn from(vm_error: vm::Error) -> Self {
+        Self::Vm(vm_error)
+    }
 }
 
 /// Dedicated [`Result`](https://doc.rust-lang.org/std/result/) type.
@@ -102,11 +107,10 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// A live VMM.
 pub struct VMM {
-    vm_fd: VmFd,
+    vm: KvmVm,
     kvm: Kvm,
     guest_memory: GuestMemoryMmap,
     device_mgr: DeviceManager,
-    vcpus: Vec<Vcpu>,
 }
 
 impl VMM {
@@ -121,14 +125,13 @@ impl VMM {
         }
 
         // Create fd for interacting with kvm-vm specific functions.
-        let vm_fd = kvm.create_vm().map_err(Error::KvmIoctl)?;
+        let vm = KvmVm::new(&kvm)?;
 
         let vmm = VMM {
-            vm_fd,
+            vm,
             kvm,
             guest_memory: GuestMemoryMmap::default(),
             device_mgr: DeviceManager::new().map_err(Error::Device)?,
-            vcpus: vec![],
         };
 
         vmm.check_kvm_capabilities()?;
@@ -167,26 +170,19 @@ impl VMM {
         }
 
         // Register guest memory regions with KVM.
-        guest_memory
-            .with_regions(|index, region| {
-                let memory_region = kvm_userspace_memory_region {
-                    slot: index as u32,
-                    guest_phys_addr: region.start_addr().raw_value(),
-                    memory_size: region.len() as u64,
-                    // It's safe to unwrap because the guest address is valid.
-                    userspace_addr: guest_memory.get_host_address(region.start_addr()).unwrap()
-                        as u64,
-                    flags: 0,
-                };
-
-                // Safe because the fd is a valid KVM file descriptor.
-                unsafe { self.vm_fd.set_user_memory_region(memory_region) }
-            })
-            .map_err(Error::KvmIoctl)?;
-
-        self.vm_fd
-            .set_tss_address(KVM_TSS_ADDRESS as usize)
-            .map_err(Error::KvmIoctl)?;
+        guest_memory.with_regions(|index, region| {
+            let memory_region = kvm_userspace_memory_region {
+                slot: index as u32,
+                guest_phys_addr: region.start_addr().raw_value(),
+                memory_size: region.len() as u64,
+                // It's safe to unwrap because the guest address is valid.
+                userspace_addr: guest_memory.get_host_address(region.start_addr()).unwrap() as u64,
+                flags: 0,
+            };
+            // Safe because we mapped the memory region, we made sure that the regions
+            // are not overlapping.
+            unsafe { self.vm.set_user_memory_region(memory_region) }
+        })?;
 
         self.guest_memory = guest_memory;
 
@@ -254,22 +250,7 @@ impl VMM {
     /// * `x86_64`: serial console
     /// * `aarch64`: N/A
     pub fn configure_pio_devices(&mut self) -> Result<()> {
-        // First, create the irqchip.
-        // On `x86_64`, this _must_ be created _before_ the vCPUs.
-        // It sets up the virtual IOAPIC, virtual PIC, and sets up the future vCPUs for local APIC.
-        // When in doubt, look in the kernel for `KVM_CREATE_IRQCHIP`.
-        // https://elixir.bootlin.com/linux/latest/source/arch/x86/kvm/x86.c
-        self.vm_fd.create_irq_chip().map_err(Error::KvmIoctl)?;
-
-        // Set up the speaker PIT, because some kernels are musical and access the speaker port
-        // during boot. Without this, KVM would continuously exit to userspace.
-        // TODO: does this *need* the irqchip in place?
-        let mut pit_config = kvm_pit_config::default();
-        pit_config.flags = KVM_PIT_SPEAKER_DUMMY;
-        self.vm_fd
-            .create_pit2(pit_config)
-            .map_err(Error::KvmIoctl)?;
-
+        self.vm.setup_irq_controller()?;
         // Create the serial console.
         let interrupt_evt = EventFd::new(libc::EFD_NONBLOCK).map_err(Error::IO)?;
         let serial = Arc::new(Mutex::new(SerialWrapper(Serial::new(
@@ -277,9 +258,7 @@ impl VMM {
             stdout(),
         ))));
         // Register its interrupt fd with KVM.
-        self.vm_fd
-            .register_irqfd(&interrupt_evt, 4)
-            .map_err(Error::KvmIoctl)?;
+        self.vm.register_irqfd(&interrupt_evt, 4);
 
         // Configure event management for the serial console's events.
         self.device_mgr.serial_ev_mgr.add_subscriber(serial.clone());
@@ -302,35 +281,31 @@ impl VMM {
         mptable::setup_mptable(&self.guest_memory, vcpu_cfg.num_vcpus)
             .map_err(|e| Error::Vcpu(vcpu::Error::Mptable(e)))?;
 
-        let base_cpuid = self
-            .kvm
-            .get_supported_cpuid(KVM_MAX_CPUID_ENTRIES)
-            .map_err(Error::KvmIoctl)?;
-
         for index in 0..vcpu_cfg.num_vcpus {
-            let vcpu = Vcpu::new(
-                &self.vm_fd,
+            self.vm.create_vcpu(
                 index,
                 self.device_mgr
                     .serial
                     .clone()
                     .expect("Remove this `expect` when the serial console becomes optional"),
-            )
-            .map_err(Error::Vcpu)?;
-
-            // Set CPUID.
+            )?;
+        }
+        // Set CPUID.
+        let base_cpuid = self
+            .kvm
+            .get_supported_cpuid(KVM_MAX_CPUID_ENTRIES)
+            .map_err(Error::KvmIoctl)?;
+        for vcpu in self.vm.vcpu_handles.iter() {
             let mut vcpu_cpuid = base_cpuid.clone();
             cpuid::filter_cpuid(
                 &self.kvm,
-                index as usize,
+                vcpu.id() as usize,
                 vcpu_cfg.num_vcpus as usize,
                 &mut vcpu_cpuid,
             );
 
             self.configure_vcpu(&vcpu, &vcpu_cpuid, kernel_load)
                 .map_err(Error::Vcpu)?;
-
-            self.vcpus.push(vcpu);
         }
 
         Ok(())
@@ -342,7 +317,7 @@ impl VMM {
             eprintln!("Failed to set raw mode on terminal. Stdin will echo.");
         }
 
-        for mut vcpu in self.vcpus.drain(..) {
+        for mut vcpu in self.vm.vcpu_handles.drain(..) {
             let _ = thread::Builder::new().spawn(move || loop {
                 vcpu.run();
             });
