@@ -1,8 +1,10 @@
 use crate::vcpu::{self, Vcpu};
 use kvm_bindings::{kvm_pit_config, kvm_userspace_memory_region, KVM_PIT_SPEAKER_DUMMY};
 use kvm_ioctls::{Kvm, VmFd};
+use std::io;
 use std::sync::Arc;
 use std::thread;
+use std::thread::JoinHandle;
 use vm_device::device_manager::IoManager;
 use vmm_sys_util::eventfd::EventFd;
 
@@ -13,6 +15,7 @@ use vmm_sys_util::eventfd::EventFd;
 pub struct KvmVm {
     fd: VmFd,
     pub(crate) vcpus: Vec<Vcpu>,
+    vcpu_handles: Vec<JoinHandle<Vcpu>>,
 }
 
 #[derive(Debug)]
@@ -27,6 +30,7 @@ pub enum Error {
     CreateVcpu(vcpu::Error),
     /// Failed to register IRQ event.
     RegisterIrqEvent(kvm_ioctls::Error),
+    RunVcpus(io::Error),
 }
 
 // TODO: Implement std::error::Error for Error.
@@ -41,6 +45,7 @@ impl KvmVm {
         Ok(KvmVm {
             fd,
             vcpus: Vec::new(),
+            vcpu_handles: Vec::new(),
         })
     }
     /// Set the user memory region.
@@ -101,12 +106,17 @@ impl KvmVm {
             .map_err(Error::RegisterIrqEvent)
     }
 
-    pub fn run(&mut self) {
+    pub fn run(&mut self) -> Result<()> {
         for mut vcpu in self.vcpus.drain(..) {
-            let _ = thread::Builder::new().spawn(move || loop {
-                vcpu.run();
-            });
+            let vcpu_handle: JoinHandle<Vcpu> = thread::Builder::new()
+                .spawn(move || loop {
+                    vcpu.run();
+                })
+                .map_err(Error::RunVcpus)?;
+            self.vcpu_handles.push(vcpu_handle);
         }
+
+        Ok(())
     }
 }
 
