@@ -29,13 +29,17 @@ use linux_loader::loader::{
     elf::{self, Elf},
     load_cmdline, KernelLoader, KernelLoaderResult,
 };
-use vm_device::device_manager::IoManager;
+use vm_device::bus::{MmioAddress, MmioRange};
+use vm_device::device_manager::{IoManager, MmioManager};
 use vm_device::resources::Resource;
 use vm_memory::{GuestAddress, GuestMemory, GuestMemoryMmap};
 use vm_superio::Serial;
 use vm_vcpu::vcpu::{cpuid::filter_cpuid, VcpuState};
 use vm_vcpu::vm::{self, KvmVm, VmState};
 use vmm_sys_util::{eventfd::EventFd, terminal::Terminal};
+
+use devices::virtio::block::{Block, BlockArgs};
+use devices::virtio::MmioConfig;
 
 mod boot;
 use boot::build_bootparams;
@@ -124,7 +128,7 @@ pub struct VMM {
     // Arc<Mutex<>> because the same device (a dyn DevicePio/DeviceMmio from IoManager's
     // perspective, and a dyn MutEventSubscriber from EventManager's) is managed by the 2 entities,
     // and isn't Copy-able; so once one of them gets ownership, the other one can't anymore.
-    event_mgr: EventManager<Arc<Mutex<dyn MutEventSubscriber>>>,
+    event_mgr: EventManager<Box<dyn MutEventSubscriber>>,
 }
 
 impl TryFrom<VMMConfig> for VMM {
@@ -296,7 +300,39 @@ impl VMM {
             .unwrap();
 
         // Hook it to event management.
-        self.event_mgr.add_subscriber(serial);
+        self.event_mgr.add_subscriber(Box::new(serial));
+
+        Ok(())
+    }
+
+    // Temporary fn to add hard coded devices until we figure out the cmdline/interface story
+    // while the RFC is up.
+    fn temp_add_devs(&mut self) -> Result<()> {
+        let mem = Arc::new(self.guest_memory.clone());
+
+        // Insert a hardcoded block.
+        {
+            let range = MmioRange::new(MmioAddress(MMIO_MEM_START), 0x1000).unwrap();
+            let mmio_cfg = MmioConfig { range, gsi: 5 };
+
+            let args = BlockArgs {
+                mem: mem.clone(),
+                endpoint: self.event_mgr.remote_endpoint(),
+                vm_fd: self.vm_fd.clone(),
+                mmio_cfg,
+                file_path: "disk.ext4".to_owned(),
+            };
+
+            let b = Arc::new(Mutex::new(
+                Block::new(args).expect("failed to create block"),
+            ));
+
+            self.device_mgr
+                .as_mut()
+                .unwrap()
+                .register_mmio(range, b)
+                .unwrap();
+        }
 
         Ok(())
     }
