@@ -39,6 +39,7 @@ use vm_vcpu::vm::{self, KvmVm, VmState};
 use vmm_sys_util::{eventfd::EventFd, terminal::Terminal};
 
 use devices::virtio::block::{Block, BlockArgs};
+use devices::virtio::net::{Net, NetArgs};
 use devices::virtio::MmioConfig;
 
 mod boot;
@@ -340,6 +341,35 @@ impl VMM {
                 .lock()
                 .unwrap()
                 .register_mmio(range, b)
+                .unwrap();
+        }
+
+        // Insert a hardcoded net.
+        {
+            let range = MmioRange::new(MmioAddress(MMIO_MEM_START + 0x1000), 0x1000).unwrap();
+            let mmio_cfg = MmioConfig { range, gsi: 6 };
+
+            // Temporary hardcoded snippet used to enable the discovery of a virtio MMIO net
+            // device using irq 6.
+            self.kernel_cfg.cmdline.push_str(&format!(
+                " virtio_mmio.device=4K@0x{:x}:6",
+                MMIO_MEM_START + 0x1000
+            ));
+
+            let args = NetArgs {
+                mem: mem.clone(),
+                endpoint: self.event_mgr.remote_endpoint(),
+                vm_fd: self.vm.vm_fd().clone(),
+                mmio_cfg,
+                tap_name: "vmtap35".to_owned(),
+            };
+
+            let n = Arc::new(Mutex::new(Net::new(args).expect("failed to create net")));
+
+            self.device_mgr
+                .lock()
+                .unwrap()
+                .register_mmio(range, n)
                 .unwrap();
         }
 
