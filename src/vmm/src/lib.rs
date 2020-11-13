@@ -13,7 +13,7 @@ use std::io::{self, stdin, stdout};
 use std::sync::{Arc, Mutex};
 
 use event_manager::{EventManager, MutEventSubscriber, SubscriberOps};
-use kvm_bindings::{kvm_userspace_memory_region, CpuId, KVM_API_VERSION, KVM_MAX_CPUID_ENTRIES};
+use kvm_bindings::{kvm_userspace_memory_region, KVM_API_VERSION, KVM_MAX_CPUID_ENTRIES};
 use kvm_ioctls::{
     Cap::{self, Ioeventfd, Irqchip, Irqfd, UserMemory},
     Kvm,
@@ -41,7 +41,9 @@ use devices::SerialWrapper;
 
 mod vcpu;
 mod vm;
-use vcpu::{cpuid, mpspec, mptable, Vcpu};
+use crate::vcpu::cpuid::filter_cpuid;
+use crate::vcpu::VcpuState;
+use vcpu::{mpspec, mptable};
 use vm::KvmVm;
 
 /// First address past 32 bits.
@@ -296,44 +298,41 @@ impl VMM {
         Ok(())
     }
 
-    /// Configure guest vCPUs.
+    /// Creates guest vCPUs.
     ///
     /// # Arguments
     ///
     /// * `vcpu_cfg` - [`VcpuConfig`](struct.VcpuConfig.html) struct containing vCPU configurations.
     /// * `kernel_load` - address where the kernel is loaded in guest memory.
-    pub fn configure_vcpus(
-        &mut self,
-        vcpu_cfg: VcpuConfig,
-        kernel_load: GuestAddress,
-    ) -> Result<()> {
+    pub fn create_vcpus(&mut self, vcpu_cfg: VcpuConfig, kernel_load: GuestAddress) -> Result<()> {
         mptable::setup_mptable(&self.guest_memory, vcpu_cfg.num_vcpus)
             .map_err(|e| Error::Vcpu(vcpu::Error::Mptable(e)))?;
 
         // Safe to use expect() because the device manager is instantiated in new(), there's no
         // default implementation, and the field is private inside the VMM struct.
         let shared_device_mgr = Arc::new(self.device_mgr.take().expect("Missing device manager"));
-
-        for index in 0..vcpu_cfg.num_vcpus {
-            // Set CPUID.
-            self.vm.create_vcpu(index, shared_device_mgr.clone())?;
-        }
-        // Set CPUID.
         let base_cpuid = self
             .kvm
             .get_supported_cpuid(KVM_MAX_CPUID_ENTRIES)
             .map_err(Error::KvmIoctl)?;
-        for vcpu in self.vm.vcpus.iter() {
-            let mut vcpu_cpuid = base_cpuid.clone();
-            cpuid::filter_cpuid(
+
+        for index in 0..vcpu_cfg.num_vcpus {
+            // Set CPUID.
+            let mut cpuid = base_cpuid.clone();
+            filter_cpuid(
                 &self.kvm,
-                vcpu.id() as usize,
+                index as usize,
                 vcpu_cfg.num_vcpus as usize,
-                &mut vcpu_cpuid,
+                &mut cpuid,
             );
 
-            self.configure_vcpu(&vcpu, &vcpu_cpuid, kernel_load)
-                .map_err(Error::Vcpu)?;
+            let vcpu_state = VcpuState {
+                kernel_load_addr: kernel_load,
+                cpuid,
+                id: index,
+            };
+            self.vm
+                .create_vcpu(shared_device_mgr.clone(), vcpu_state, &self.guest_memory)?;
         }
 
         Ok(())
@@ -369,27 +368,6 @@ impl VMM {
             Ok(())
         }
     }
-
-    fn configure_vcpu(
-        &self,
-        vcpu: &Vcpu,
-        cpuid: &CpuId,
-        kernel_load: GuestAddress,
-    ) -> vcpu::Result<()> {
-        // Configure CPUID.
-        vcpu.configure_cpuid(cpuid)?;
-
-        // Configure MSRs (model specific registers).
-        vcpu.configure_msrs()?;
-
-        // Configure regs, sregs and fpu.
-        vcpu.configure_regs(kernel_load)?;
-        vcpu.configure_sregs(&self.guest_memory)?;
-        vcpu.configure_fpu()?;
-
-        // Configure LAPICs.
-        vcpu.configure_lapic()
-    }
 }
 
 impl TryFrom<VMMConfig> for VMM {
@@ -400,7 +378,7 @@ impl TryFrom<VMMConfig> for VMM {
         vmm.configure_guest_memory(config.memory_config)?;
         let kernel_load = vmm.configure_kernel(config.kernel_config)?;
         vmm.configure_pio_devices()?;
-        vmm.configure_vcpus(config.vcpu_config, kernel_load.kernel_load)?;
+        vmm.create_vcpus(config.vcpu_config, kernel_load.kernel_load)?;
         Ok(vmm)
     }
 }

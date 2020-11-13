@@ -1,4 +1,4 @@
-use crate::vcpu::{self, Vcpu};
+use crate::vcpu::{self, Vcpu, VcpuState};
 use kvm_bindings::{kvm_pit_config, kvm_userspace_memory_region, KVM_PIT_SPEAKER_DUMMY};
 use kvm_ioctls::{Kvm, VmFd};
 use std::io;
@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::thread;
 use std::thread::JoinHandle;
 use vm_device::device_manager::IoManager;
+use vm_memory::GuestMemoryMmap;
 use vmm_sys_util::eventfd::EventFd;
 
 /// A KVM specific implementation of a Virtual Machine.
@@ -17,7 +18,7 @@ pub struct KvmVm {
     // Only one of `vcpus` or `vcpu_handles` can be active at a time.
     // To create the `vcpu_handles` the `vcpu` vector is drained.
     // A better abstraction should be used to represent this behavior.
-    pub(crate) vcpus: Vec<Vcpu>,
+    vcpus: Vec<Vcpu>,
     vcpu_handles: Vec<JoinHandle<Vcpu>>,
 }
 
@@ -89,7 +90,12 @@ impl KvmVm {
     }
 
     /// Create a Vcpu based on the passed configuration.
-    pub(crate) fn create_vcpu(&mut self, index: u8, bus: Arc<IoManager>) -> Result<()> {
+    pub(crate) fn create_vcpu(
+        &mut self,
+        bus: Arc<IoManager>,
+        vcpu_state: VcpuState,
+        memory: &GuestMemoryMmap,
+    ) -> Result<()> {
         let vcpu = Vcpu::new(&self.fd, index, bus).map_err(Error::CreateVcpu)?;
         self.vcpus.push(vcpu);
         Ok(())

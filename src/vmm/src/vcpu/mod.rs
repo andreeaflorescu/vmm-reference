@@ -52,39 +52,54 @@ pub enum Error {
 /// Dedicated Result type.
 pub type Result<T> = result::Result<T, Error>;
 
+pub(crate) struct VcpuState {
+    pub id: u8,
+    pub cpuid: CpuId,
+    pub kernel_load_addr: GuestAddress,
+}
+
 /// Struct for interacting with vCPUs.
 ///
 /// This struct is a temporary (and quite terrible) placeholder until the
 /// [`vmm-vcpu`](https://github.com/rust-vmm/vmm-vcpu) crate is stabilized.
 pub(crate) struct Vcpu {
-    id: u8,
     /// KVM file descriptor for a vCPU.
     pub vcpu_fd: VcpuFd,
     /// Device manager for bus accesses.
     pub device_mgr: Arc<IoManager>,
+    state: VcpuState,
 }
 
 impl Vcpu {
     /// Create a new vCPU.
-    pub fn new(vm_fd: &VmFd, index: u8, device_mgr: Arc<IoManager>) -> Result<Self> {
-        Ok(Vcpu {
-            id: index,
-            vcpu_fd: vm_fd.create_vcpu(index).map_err(Error::KvmIoctl)?,
+    pub fn new(
+        vm_fd: &VmFd,
+        device_mgr: Arc<IoManager>,
+        state: VcpuState,
+        memory: &GuestMemoryMmap,
+    ) -> Result<Self> {
+        let vcpu = Vcpu {
+            vcpu_fd: vm_fd.create_vcpu(state.id).map_err(Error::KvmIoctl)?,
             device_mgr,
-        })
-    }
+            state,
+        };
 
-    pub fn id(&self) -> u8 {
-        self.id
+        vcpu.configure_cpuid(&vcpu.state.cpuid)?;
+        vcpu.configure_msrs()?;
+        vcpu.configure_regs(vcpu.state.kernel_load_addr)?;
+        vcpu.configure_sregs(memory)?;
+        vcpu.configure_lapic()?;
+        vcpu.configure_fpu()?;
+        Ok(vcpu)
     }
 
     /// Set CPUID.
-    pub fn configure_cpuid(&self, cpuid: &CpuId) -> Result<()> {
+    fn configure_cpuid(&self, cpuid: &CpuId) -> Result<()> {
         self.vcpu_fd.set_cpuid2(cpuid).map_err(Error::KvmIoctl)
     }
 
     /// Configure MSRs.
-    pub fn configure_msrs(&self) -> Result<()> {
+    fn configure_msrs(&self) -> Result<()> {
         let entry_vec = msrs::create_boot_msr_entries();
         let msrs = Msrs::from_entries(&entry_vec);
         self.vcpu_fd
@@ -100,7 +115,7 @@ impl Vcpu {
     }
 
     /// Configure regs.
-    pub fn configure_regs(&self, kernel_load: GuestAddress) -> Result<()> {
+    fn configure_regs(&self, kernel_load: GuestAddress) -> Result<()> {
         let regs = kvm_regs {
             rflags: 0x0000_0000_0000_0002u64,
             rip: kernel_load.raw_value(),
@@ -118,7 +133,7 @@ impl Vcpu {
     }
 
     /// Configure sregs.
-    pub fn configure_sregs(&self, guest_memory: &GuestMemoryMmap) -> Result<()> {
+    fn configure_sregs(&self, guest_memory: &GuestMemoryMmap) -> Result<()> {
         let mut sregs = self.vcpu_fd.get_sregs().map_err(Error::KvmIoctl)?;
 
         // Global descriptor tables.
@@ -186,7 +201,7 @@ impl Vcpu {
     }
 
     /// Configure FPU.
-    pub fn configure_fpu(&self) -> Result<()> {
+    fn configure_fpu(&self) -> Result<()> {
         let fpu = kvm_fpu {
             fcw: 0x37f,
             mxcsr: 0x1f80,
@@ -196,7 +211,7 @@ impl Vcpu {
     }
 
     /// Configures LAPICs. LAPIC0 is set for external interrupts, LAPIC1 is set for NMI.
-    pub fn configure_lapic(&self) -> Result<()> {
+    fn configure_lapic(&self) -> Result<()> {
         let mut klapic = self.vcpu_fd.get_lapic().map_err(Error::KvmIoctl)?;
 
         let lvt_lint0 = get_klapic_reg(&klapic, APIC_LVT0);
