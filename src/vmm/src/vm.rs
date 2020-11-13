@@ -1,4 +1,4 @@
-use crate::vcpu::{self, Vcpu};
+use crate::vcpu::{self, Vcpu, VcpuState};
 use kvm_bindings::{kvm_pit_config, kvm_userspace_memory_region, KVM_PIT_SPEAKER_DUMMY};
 use kvm_ioctls::{Kvm, VmFd};
 use std::io;
@@ -7,6 +7,7 @@ use std::thread;
 use std::thread::JoinHandle;
 use vm_device::device_manager::IoManager;
 use vmm_sys_util::eventfd::EventFd;
+use vm_memory::GuestMemoryMmap;
 
 /// A KVM specific implementation of a Virtual Machine.
 ///
@@ -90,8 +91,8 @@ impl KvmVm {
     // TODO: This should not be pub (crate). Make it pub after removing `serial_console` param.
     // Right now this is complicated to abstract because the Vcpu holds a reference to
     // the Serial Console. Waiting on the creation of a Bus before defining the implementation.
-    pub(crate) fn create_vcpu(&mut self, index: u8, bus: Arc<IoManager>) -> Result<()> {
-        let vcpu = Vcpu::new(&self.fd, index, bus).map_err(Error::CreateVcpu)?;
+    pub(crate) fn create_vcpu(&mut self, bus: Arc<IoManager>, vcpu_state: VcpuState, memory: &GuestMemoryMmap) -> Result<()> {
+        let vcpu = Vcpu::new(&self.fd, bus, vcpu_state, memory).map_err(Error::CreateVcpu)?;
         self.vcpus.push(vcpu);
         Ok(())
     }
