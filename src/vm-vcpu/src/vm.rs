@@ -6,8 +6,8 @@ use std::sync::Arc;
 use std::thread;
 use std::thread::JoinHandle;
 use vm_device::device_manager::IoManager;
-use vm_memory::GuestMemoryMmap;
 use vmm_sys_util::eventfd::EventFd;
+use vm_memory::GuestMemory;
 
 /// A KVM specific implementation of a Virtual Machine.
 ///
@@ -90,11 +90,11 @@ impl KvmVm {
     }
 
     /// Create a Vcpu based on the passed configuration.
-    pub fn create_vcpu(
+    pub fn create_vcpu<M: GuestMemory>(
         &mut self,
         bus: Arc<IoManager>,
         vcpu_state: VcpuState,
-        memory: &GuestMemoryMmap,
+        memory: &M,
     ) -> Result<()> {
         let vcpu = Vcpu::new(&self.fd, bus, vcpu_state, memory).map_err(Error::CreateVcpu)?;
         self.vcpus.push(vcpu);
