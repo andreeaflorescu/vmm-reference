@@ -9,7 +9,7 @@ use kvm_bindings::{kvm_fpu, kvm_regs, CpuId, Msrs};
 use kvm_ioctls::{VcpuExit, VcpuFd, VmFd};
 use vm_device::bus::PioAddress;
 use vm_device::device_manager::{IoManager, PioManager};
-use vm_memory::{Address, Bytes, GuestAddress, GuestMemoryError, GuestMemory};
+use vm_memory::{Address, Bytes, GuestAddress, GuestMemory, GuestMemoryError};
 use vmm_sys_util::terminal::Terminal;
 
 mod gdt;
@@ -66,7 +66,7 @@ pub struct VcpuState {
 ///
 /// This struct is a temporary (and quite terrible) placeholder until the
 /// [`vmm-vcpu`](https://github.com/rust-vmm/vmm-vcpu) crate is stabilized.
-pub struct Vcpu {
+pub struct KvmVcpu {
     /// KVM file descriptor for a vCPU.
     pub vcpu_fd: VcpuFd,
     /// Device manager for bus accesses.
@@ -74,15 +74,15 @@ pub struct Vcpu {
     state: VcpuState,
 }
 
-impl Vcpu {
-    /// Create a new vCPU.
+impl KvmVcpu {
+    /// Create a new vCPU.127:46
     pub fn new<T: GuestMemory>(
         vm_fd: &VmFd,
         device_mgr: Arc<IoManager>,
         state: VcpuState,
         memory: &T,
     ) -> Result<Self> {
-        let vcpu = Vcpu {
+        let vcpu = KvmVcpu {
             vcpu_fd: vm_fd.create_vcpu(state.id).map_err(Error::KvmIoctl)?,
             device_mgr,
             state,

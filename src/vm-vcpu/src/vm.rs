@@ -1,4 +1,4 @@
-use crate::vcpu::{self, Vcpu, VcpuState};
+use crate::vcpu::{self, KvmVcpu, VcpuState};
 use kvm_bindings::{kvm_pit_config, kvm_userspace_memory_region, KVM_PIT_SPEAKER_DUMMY};
 use kvm_ioctls::{Kvm, VmFd};
 use std::io;
@@ -6,8 +6,8 @@ use std::sync::Arc;
 use std::thread;
 use std::thread::JoinHandle;
 use vm_device::device_manager::IoManager;
-use vmm_sys_util::eventfd::EventFd;
 use vm_memory::GuestMemory;
+use vmm_sys_util::eventfd::EventFd;
 
 /// A KVM specific implementation of a Virtual Machine.
 ///
@@ -18,8 +18,8 @@ pub struct KvmVm {
     // Only one of `vcpus` or `vcpu_handles` can be active at a time.
     // To create the `vcpu_handles` the `vcpu` vector is drained.
     // A better abstraction should be used to represent this behavior.
-    vcpus: Vec<Vcpu>,
-    vcpu_handles: Vec<JoinHandle<Vcpu>>,
+    vcpus: Vec<KvmVcpu>,
+    vcpu_handles: Vec<JoinHandle<KvmVcpu>>,
 }
 
 #[derive(Debug)]
@@ -96,7 +96,7 @@ impl KvmVm {
         vcpu_state: VcpuState,
         memory: &M,
     ) -> Result<()> {
-        let vcpu = Vcpu::new(&self.fd, bus, vcpu_state, memory).map_err(Error::CreateVcpu)?;
+        let vcpu = KvmVcpu::new(&self.fd, bus, vcpu_state, memory).map_err(Error::CreateVcpu)?;
         self.vcpus.push(vcpu);
         Ok(())
     }
@@ -111,7 +111,7 @@ impl KvmVm {
 
     pub fn run(&mut self) -> Result<()> {
         for mut vcpu in self.vcpus.drain(..) {
-            let vcpu_handle: JoinHandle<Vcpu> = thread::Builder::new()
+            let vcpu_handle: JoinHandle<KvmVcpu> = thread::Builder::new()
                 .spawn(move || loop {
                     vcpu.run();
                 })
