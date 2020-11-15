@@ -90,13 +90,13 @@ impl KvmVm {
     }
 
     /// Create a Vcpu based on the passed configuration.
-    pub(crate) fn create_vcpu(
+    pub fn create_vcpu(
         &mut self,
         bus: Arc<IoManager>,
         vcpu_state: VcpuState,
         memory: &GuestMemoryMmap,
     ) -> Result<()> {
-        let vcpu = Vcpu::new(&self.fd, index, bus).map_err(Error::CreateVcpu)?;
+        let vcpu = Vcpu::new(&self.fd, bus, vcpu_state, memory).map_err(Error::CreateVcpu)?;
         self.vcpus.push(vcpu);
         Ok(())
     }

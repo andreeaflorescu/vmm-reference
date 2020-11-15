@@ -12,15 +12,16 @@ use vm_device::device_manager::{IoManager, PioManager};
 use vm_memory::{Address, Bytes, GuestAddress, GuestMemoryError, GuestMemoryMmap};
 use vmm_sys_util::terminal::Terminal;
 
-pub(crate) mod cpuid;
 mod gdt;
 use gdt::*;
 mod interrupts;
 use interrupts::*;
-pub(crate) mod mpspec;
-pub(crate) mod mptable;
-pub(crate) mod msr_index;
-pub(crate) mod msrs;
+
+pub mod cpuid;
+pub mod mpspec;
+pub mod mptable;
+pub mod msr_index;
+pub mod msrs;
 
 /// Initial stack for the boot CPU.
 const BOOT_STACK_POINTER: u64 = 0x8ff0;
@@ -52,17 +53,20 @@ pub enum Error {
 /// Dedicated Result type.
 pub type Result<T> = result::Result<T, Error>;
 
-pub(crate) struct VcpuState {
+pub struct VcpuState {
     pub id: u8,
     pub cpuid: CpuId,
     pub kernel_load_addr: GuestAddress,
+    // todo: make the load_addr and zero_page_start addr uniform.
+    // they should either both be u64 or GuestAddress.
+    pub zero_page_start: u64,
 }
 
 /// Struct for interacting with vCPUs.
 ///
 /// This struct is a temporary (and quite terrible) placeholder until the
 /// [`vmm-vcpu`](https://github.com/rust-vmm/vmm-vcpu) crate is stabilized.
-pub(crate) struct Vcpu {
+pub struct Vcpu {
     /// KVM file descriptor for a vCPU.
     pub vcpu_fd: VcpuFd,
     /// Device manager for bus accesses.
@@ -86,7 +90,7 @@ impl Vcpu {
 
         vcpu.configure_cpuid(&vcpu.state.cpuid)?;
         vcpu.configure_msrs()?;
-        vcpu.configure_regs(vcpu.state.kernel_load_addr)?;
+        vcpu.configure_regs(vcpu.state.kernel_load_addr, vcpu.state.zero_page_start)?;
         vcpu.configure_sregs(memory)?;
         vcpu.configure_lapic()?;
         vcpu.configure_fpu()?;
@@ -115,7 +119,7 @@ impl Vcpu {
     }
 
     /// Configure regs.
-    fn configure_regs(&self, kernel_load: GuestAddress) -> Result<()> {
+    fn configure_regs(&self, kernel_load: GuestAddress, zero_page_start: u64) -> Result<()> {
         let regs = kvm_regs {
             rflags: 0x0000_0000_0000_0002u64,
             rip: kernel_load.raw_value(),
@@ -126,7 +130,7 @@ impl Vcpu {
             // Starting stack pointer.
             rbp: BOOT_STACK_POINTER,
             // Must point to zero page address per Linux ABI. This is x86_64 specific.
-            rsi: crate::ZEROPG_START,
+            rsi: zero_page_start,
             ..Default::default()
         };
         self.vcpu_fd.set_regs(&regs).map_err(Error::KvmIoctl)

@@ -28,6 +28,8 @@ use vm_device::device_manager::IoManager;
 use vm_device::resources::Resource;
 use vm_memory::{Address, GuestAddress, GuestMemory, GuestMemoryMmap, GuestMemoryRegion};
 use vm_superio::Serial;
+use vm_vcpu::vcpu::{self, cpuid::filter_cpuid, mptable, VcpuState};
+use vm_vcpu::vm::{self, KvmVm};
 use vmm_sys_util::{eventfd::EventFd, terminal::Terminal};
 
 mod boot;
@@ -38,13 +40,6 @@ pub use config::*;
 
 mod devices;
 use devices::SerialWrapper;
-
-mod vcpu;
-mod vm;
-use crate::vcpu::cpuid::filter_cpuid;
-use crate::vcpu::VcpuState;
-use vcpu::{mpspec, mptable};
-use vm::KvmVm;
 
 /// First address past 32 bits.
 const FIRST_ADDR_PAST_32BITS: u64 = 1 << 32;
@@ -119,7 +114,6 @@ pub struct VMM {
     // perspective, and a dyn MutEventSubscriber from EventManager's) is managed by the 2 entities,
     // and isn't Copy-able; so once one of them gets ownership, the other one can't anymore.
     event_mgr: EventManager<Arc<Mutex<dyn MutEventSubscriber>>>,
-    vcpus: Vec<Vcpu>,
 }
 
 impl VMM {
@@ -142,7 +136,6 @@ impl VMM {
             guest_memory: GuestMemoryMmap::default(),
             device_mgr: Some(IoManager::new()),
             event_mgr: EventManager::new().map_err(Error::EventManager)?,
-            vcpus: vec![],
         };
 
         vmm.check_kvm_capabilities()?;
@@ -305,6 +298,7 @@ impl VMM {
     /// * `vcpu_cfg` - [`VcpuConfig`](struct.VcpuConfig.html) struct containing vCPU configurations.
     /// * `kernel_load` - address where the kernel is loaded in guest memory.
     pub fn create_vcpus(&mut self, vcpu_cfg: VcpuConfig, kernel_load: GuestAddress) -> Result<()> {
+        // TODO: Should we move this function call to the Vm module?
         mptable::setup_mptable(&self.guest_memory, vcpu_cfg.num_vcpus)
             .map_err(|e| Error::Vcpu(vcpu::Error::Mptable(e)))?;
 
@@ -330,6 +324,7 @@ impl VMM {
                 kernel_load_addr: kernel_load,
                 cpuid,
                 id: index,
+                zero_page_start: ZEROPG_START,
             };
             self.vm
                 .create_vcpu(shared_device_mgr.clone(), vcpu_state, &self.guest_memory)?;
