@@ -1,0 +1,51 @@
+# network setup
+
+sudo ip tuntap add vmtap35 mode tap
+sudo ip addr add 192.168.241.1/30 dev vmtap35
+sudo ip link set vmtap35 up
+
+sudo sh -c "echo 1 > /proc/sys/net/ipv4/ip_forward"
+sudo iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+sudo iptables -A FORWARD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+sudo iptables -A FORWARD -i vmtap35 -o eth0 -j ACCEPT
+
+# ==============
+#
+# build busybox kernel & vmm
+
+sudo resources/kernel/make_kernel_image.sh  \
+    -f elf                                  \
+    -j 2                                    \
+    -k vmlinux-reinvent                     \
+    -w /tmp/vmlinux_busybox
+
+sudo cp                                                  \
+    /tmp/vmlinux_busybox/linux-4.14.176/vmlinux-reinvent \
+    resources/kernel/
+
+# ==============
+#
+# run
+
+target/debug/vmm-reference                          \
+    --kernel path=resources/kernel/vmlinux-reinvent \
+    --net tap=vmtap35
+    
+# ==============
+#
+# test the webserver
+
+curl http://192.168.241.2
+# a GET; should print re:invent ascii art.
+
+curl http://192.168.241.2/uploaded.out
+# GET; should return 404
+
+echo 'Hello, world!' > demo.txt
+
+curl --form "file1=@demo.txt"  http://192.168.241.2/cgi-bin/upload.cgi
+# a POST that uploads a file to "uploaded.out"
+
+curl http://192.168.241.2/uploaded.out
+# GET; should print the contents of the uploaded file
+
