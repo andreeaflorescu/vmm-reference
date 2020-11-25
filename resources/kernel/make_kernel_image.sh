@@ -97,7 +97,7 @@ make_kernel_config "$TEST_RESOURCE_DIR/$KERNEL_CFG" "$kernel_dir"
 # Step 4: make the initramfs.
 make_busybox "$WORKDIR" "$TEST_RESOURCE_DIR/$BUSYBOX_CFG"   \
     "$BUSYBOX_VERSION" "$MAKEPROCS"
-make_initramfs "$kernel_dir" "$WORKDIR/busybox_rootfs" "$HALT"
+make_initramfs "$kernel_dir" "$WORKDIR/busybox_rootfs" "$HALT" "$TEST_RESOURCE_DIR/www"
 
 # Step 5: put them together.
 make_kernel "$kernel_dir" "$KERNEL_FMT" "$MAKEPROCS" "$KERNEL_BINARY"

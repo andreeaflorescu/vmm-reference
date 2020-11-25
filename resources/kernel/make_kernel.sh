@@ -63,25 +63,31 @@ make_kernel_config() {
 #   make_initramfs              \
 #       /path/to/kernel/dir     \
 #       /path/to/busybox/rootfs \
-#       [halt_value]
+#       [halt_value]            \
+#       [/path/to/www]
 make_initramfs() {
     kernel_dir="$1"
     busybox_rootfs="$2"
     halt="$3"
+    www="$4"
 
     [ -z "$kernel_dir" ] && die "Kernel directory not specified."
     [ ! -d "$kernel_dir" ] && die "Kernel directory not found."
     [ -z "$busybox_rootfs" ] && die "Busybox rootfs not specified."
     [ ! -d "$busybox_rootfs" ] && die "Busybox rootfs directory not found."
+    if [ -n "$www" ] && [ ! -d "$www" ]; then
+        die "Webserver root directory not found."
+    fi
 
     # Move to the directory with the kernel sources.
     pushd_quiet "$kernel_dir"
 
     # Prepare initramfs directory.
-    mkdir -p initramfs/{bin,dev,etc,home,mnt,proc,sys,usr}
+    mkdir -p initramfs/{bin,dev,etc,home,mnt,proc,sys,usr,www}
     # Copy busybox.
     echo "Copying busybox to the initramfs directory..."
     cp -r "$busybox_rootfs"/* initramfs/
+    cp -R "$www"/* initramfs/www/
 
     # Make a block device and a console.
     pushd_quiet initramfs/dev
