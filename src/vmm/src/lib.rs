@@ -318,7 +318,7 @@ impl VMM {
             let args = BlockArgs {
                 mem: mem.clone(),
                 endpoint: self.event_mgr.remote_endpoint(),
-                vm_fd: self.vm_fd.clone(),
+                vm_fd: self.vm.vm_fd(),
                 mmio_cfg,
                 file_path: "disk.ext4".to_owned(),
             };
