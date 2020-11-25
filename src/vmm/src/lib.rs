@@ -128,7 +128,7 @@ pub struct VMM {
     // Arc<Mutex<>> because the same device (a dyn DevicePio/DeviceMmio from IoManager's
     // perspective, and a dyn MutEventSubscriber from EventManager's) is managed by the 2 entities,
     // and isn't Copy-able; so once one of them gets ownership, the other one can't anymore.
-    event_mgr: EventManager<Box<dyn MutEventSubscriber>>,
+    event_mgr: EventManager<Box<dyn MutEventSubscriber + Send>>,
 }
 
 impl TryFrom<VMMConfig> for VMM {
@@ -163,6 +163,8 @@ impl TryFrom<VMMConfig> for VMM {
 
         vmm.add_serial_console()?;
         vmm.create_vcpus(&config.vcpu_config)?;
+
+        vmm.temp_add_devs()?;
 
         Ok(vmm)
     }
@@ -315,6 +317,13 @@ impl VMM {
             let range = MmioRange::new(MmioAddress(MMIO_MEM_START), 0x1000).unwrap();
             let mmio_cfg = MmioConfig { range, gsi: 5 };
 
+            // Temporary hardcoded snippet used to enable the discovery of a virtio MMIO block
+            // device, and mark /dev/vda as the root device, using irq 5.
+            self.kernel_cfg.cmdline.push_str(&format!(
+                " virtio_mmio.device=4K@0x{:x}:5 root=/dev/vda",
+                MMIO_MEM_START
+            ));
+
             let args = BlockArgs {
                 mem: mem.clone(),
                 endpoint: self.event_mgr.remote_endpoint(),
@@ -328,7 +337,7 @@ impl VMM {
             ));
 
             self.device_mgr
-                .as_mut()
+                .lock()
                 .unwrap()
                 .register_mmio(range, b)
                 .unwrap();
