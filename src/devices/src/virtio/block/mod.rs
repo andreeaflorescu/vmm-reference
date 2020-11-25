@@ -11,7 +11,7 @@ mod simple_handler;
 
 use std::fs::File;
 use std::io::{self, Seek, SeekFrom};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use event_manager::{Error as EvmgrError, MutEventSubscriber, RemoteEndpoint};
@@ -72,5 +72,5 @@ pub struct BlockArgs<M> {
     // Used to register irfqds and ioeventfds by the device.
     pub vm_fd: Arc<VmFd>,
     pub mmio_cfg: MmioConfig,
-    pub file_path: String,
+    pub file_path: PathBuf,
 }

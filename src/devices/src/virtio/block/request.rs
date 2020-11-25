@@ -72,18 +72,18 @@ impl ExecuteError {
 
 /// Helper object for setting up all `Block` fields derived from its backing file.
 pub struct DiskProperties {
-    file_path: String,
+    file_path: PathBuf,
     file: File,
     nsectors: u64,
     image_id: Vec<u8>,
 }
 
 impl DiskProperties {
-    pub fn new(disk_image_path: String, is_disk_read_only: bool) -> io::Result<Self> {
+    pub fn new(disk_image_path: PathBuf, is_disk_read_only: bool) -> io::Result<Self> {
         let mut disk_image = OpenOptions::new()
             .read(true)
             .write(!is_disk_read_only)
-            .open(PathBuf::from(&disk_image_path))?;
+            .open(&disk_image_path)?;
         let disk_size = disk_image.seek(SeekFrom::End(0))? as u64;
 
         // We only support disk size, which uses the first two words of the configuration space.
@@ -146,7 +146,7 @@ impl DiskProperties {
     }
 
     /// Backing file path.
-    pub fn file_path(&self) -> &String {
+    pub fn file_path(&self) -> &PathBuf {
         &self.file_path
     }
 

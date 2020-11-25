@@ -22,6 +22,7 @@ use crate::virtio::{
 use super::handler::QueueHandler;
 use super::simple_handler::SimpleHandler;
 use super::{build_config_space, BlockArgs, Error, Result, VIRTIO_BLK_F_FLUSH};
+use std::path::PathBuf;
 
 // This Block device can only use the MMIO transport for now, but we plan to reuse large parts of
 // the functionality when we implement virtio PCI as well, for example by having a base generic
@@ -32,7 +33,7 @@ pub struct Block<M: GuestAddressSpace> {
     endpoint: RemoteEndpoint<Box<dyn MutEventSubscriber + Send>>,
     vm_fd: Arc<VmFd>,
     irqfd: Arc<EventFd>,
-    file_path: String,
+    file_path: PathBuf,
 }
 
 impl<M: GuestAddressSpace + Clone> Block<M> {

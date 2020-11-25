@@ -11,6 +11,7 @@ use std::ffi::CString;
 use std::fs::File;
 use std::io::{self, stdin, stdout};
 use std::sync::{Arc, Mutex};
+use std::path::PathBuf;
 
 use event_manager::{EventManager, MutEventSubscriber, SubscriberOps};
 use kvm_bindings::{KVM_API_VERSION, KVM_MAX_CPUID_ENTRIES};
@@ -162,10 +163,18 @@ impl TryFrom<VMMConfig> for VMM {
             kernel_cfg: config.kernel_config.clone(),
         };
 
-        vmm.add_serial_console()?;
-        vmm.create_vcpus(&config.vcpu_config)?;
 
-        vmm.temp_add_devs()?;
+        vmm.create_vcpus(&config.vcpu_config)?;
+        vmm.add_serial_console()?;
+
+        if config.network_config.is_some() {
+            // TODO: do not unwrap here.
+            vmm.add_net_device(&config.network_config.unwrap()).unwrap();
+        }
+
+        if config.block_config.is_some() {
+            vmm.add_block_device(&config.block_config.unwrap()).unwrap();
+        }
 
         Ok(vmm)
     }
@@ -308,70 +317,64 @@ impl VMM {
         Ok(())
     }
 
-    // Temporary fn to add hard coded devices until we figure out the cmdline/interface story
-    // while the RFC is up.
-    fn temp_add_devs(&mut self) -> Result<()> {
-        let mem = Arc::new(self.guest_memory.clone());
+    fn add_block_device(&mut self, cfg: &BlockConfig) -> Result<()> {
+        let range = MmioRange::new(MmioAddress(MMIO_MEM_START), 0x1000).unwrap();
+        let mmio_cfg = MmioConfig { range, gsi: 5 };
 
-        // Insert a hardcoded block.
-        {
-            let range = MmioRange::new(MmioAddress(MMIO_MEM_START), 0x1000).unwrap();
-            let mmio_cfg = MmioConfig { range, gsi: 5 };
+        // Temporary hardcoded snippet used to enable the discovery of a virtio MMIO block
+        // device, and mark /dev/vda as the root device, using irq 5.
+        self.kernel_cfg.cmdline.push_str(&format!(
+            " virtio_mmio.device=4K@0x{:x}:5 root=/dev/vda",
+            MMIO_MEM_START
+        ));
 
-            // Temporary hardcoded snippet used to enable the discovery of a virtio MMIO block
-            // device, and mark /dev/vda as the root device, using irq 5.
-            self.kernel_cfg.cmdline.push_str(&format!(
-                " virtio_mmio.device=4K@0x{:x}:5 root=/dev/vda",
-                MMIO_MEM_START
-            ));
+        let args = BlockArgs {
+            mem: Arc::new(self.guest_memory.clone()),
+            endpoint: self.event_mgr.remote_endpoint(),
+            vm_fd: self.vm.vm_fd(),
+            mmio_cfg,
+            file_path: PathBuf::from(&cfg.path),
+        };
 
-            let args = BlockArgs {
-                mem: mem.clone(),
-                endpoint: self.event_mgr.remote_endpoint(),
-                vm_fd: self.vm.vm_fd(),
-                mmio_cfg,
-                file_path: "disk.ext4".to_owned(),
-            };
+        let b = Arc::new(Mutex::new(
+            Block::new(args).expect("failed to create block"),
+        ));
 
-            let b = Arc::new(Mutex::new(
-                Block::new(args).expect("failed to create block"),
-            ));
+        self.device_mgr
+            .lock()
+            .unwrap()
+            .register_mmio(range, b)
+            .unwrap();
 
-            self.device_mgr
-                .lock()
-                .unwrap()
-                .register_mmio(range, b)
-                .unwrap();
-        }
+        Ok(())
+    }
 
-        // Insert a hardcoded net.
-        {
-            let range = MmioRange::new(MmioAddress(MMIO_MEM_START + 0x1000), 0x1000).unwrap();
-            let mmio_cfg = MmioConfig { range, gsi: 6 };
+    fn add_net_device(&mut self, net_config: &NetConfig) -> Result<()> {
+        let range = MmioRange::new(MmioAddress(MMIO_MEM_START + 0x1000), 0x1000).unwrap();
+        let mmio_cfg = MmioConfig { range, gsi: 6 };
 
-            // Temporary hardcoded snippet used to enable the discovery of a virtio MMIO net
-            // device using irq 6.
-            self.kernel_cfg.cmdline.push_str(&format!(
-                " virtio_mmio.device=4K@0x{:x}:6",
-                MMIO_MEM_START + 0x1000
-            ));
+        // Temporary hardcoded snippet used to enable the discovery of a virtio MMIO net
+        // device using irq 6.
+        self.kernel_cfg.cmdline.push_str(&format!(
+            " virtio_mmio.device=4K@0x{:x}:6",
+            MMIO_MEM_START + 0x1000
+        ));
 
-            let args = NetArgs {
-                mem: mem.clone(),
-                endpoint: self.event_mgr.remote_endpoint(),
-                vm_fd: self.vm.vm_fd().clone(),
-                mmio_cfg,
-                tap_name: "vmtap35".to_owned(),
-            };
+        let args = NetArgs {
+            mem: Arc::new(self.guest_memory.clone()),
+            endpoint: self.event_mgr.remote_endpoint(),
+            vm_fd: self.vm.vm_fd().clone(),
+            mmio_cfg,
+            tap_name: net_config.tap_name.clone(),
+        };
 
-            let n = Arc::new(Mutex::new(Net::new(args).expect("failed to create net")));
+        let n = Arc::new(Mutex::new(Net::new(args).expect("failed to create net")));
 
-            self.device_mgr
-                .lock()
-                .unwrap()
-                .register_mmio(range, n)
-                .unwrap();
-        }
+        self.device_mgr
+            .lock()
+            .unwrap()
+            .register_mmio(range, n)
+            .unwrap();
 
         Ok(())
     }
@@ -483,6 +486,8 @@ mod tests {
                 size_mib: MEM_SIZE_MIB,
             },
             vcpu_config: VcpuConfig { num: NUM_VCPUS },
+            block_config: None,
+            network_config: None,
         }
     }
 
