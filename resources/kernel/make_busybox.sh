@@ -97,6 +97,7 @@ EOF
 /sbin/ip link set eth0 up
 /sbin/ip route add default via 192.168.241.1 dev eth0
 # Start http server.
+/bin/chmod +x /www/cgi-bin/*
 /usr/sbin/httpd -p 80 -h /www
 # Profit!
 setsid /bin/sh -c 'exec /bin/sh </dev/ttyS0 >/dev/ttyS0 2>&1'
