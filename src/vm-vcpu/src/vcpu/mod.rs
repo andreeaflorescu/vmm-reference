@@ -266,9 +266,12 @@ impl KvmVcpu {
                             {
                                 eprintln!("Failed to write to serial port");
                             }
-                        } else if addr == 0x060 || addr == 0x061 || addr == 0x064 {
-                            // Write at the i8042 port.
-                            // See https://wiki.osdev.org/%228042%22_PS/2_Controller#PS.2F2_Controller_IO_Ports
+                        } else if data.len() == 1 && data[0] == 0xfe && addr == 0x64 {
+                            println!("Received reset. Guest shutting down.");
+                            if stdin().lock().set_canon_mode().is_err() {
+                                eprintln!("Failed to set canon mode. Stdin will not echo.");
+                            }
+                            unsafe { libc::exit(0) };
                         } else if 0x070 <= addr && addr <= 0x07f {
                             // Write at the RTC port.
                         } else {
@@ -288,7 +291,12 @@ impl KvmVcpu {
                                 eprintln!("Failed to read from serial port");
                             }
                         } else {
-                            // Read from some other port.
+                            // Emulate a dummy i8042.
+                            if data.len() == 1 && addr == 0x64 {
+                                data[0] = 0x0;
+                            } else if data.len() == 1 && addr == 0x61 {
+                                data[0] = 0x20;
+                            }
                         }
                     }
                     VcpuExit::MmioRead(addr, data) => {
