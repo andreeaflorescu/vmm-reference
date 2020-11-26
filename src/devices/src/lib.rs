@@ -6,3 +6,4 @@
 // going forward.
 
 pub mod virtio;
+pub mod legacy;

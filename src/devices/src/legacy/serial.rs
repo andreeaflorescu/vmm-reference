@@ -11,11 +11,11 @@ use vm_device::{
     bus::{PioAddress, PioAddressValue},
     MutDevicePio,
 };
-use vm_superio::Serial;
+pub use vm_superio::Serial;
 use vmm_sys_util::epoll::EventSet;
 
 /// Newtype for implementing `event-manager` functionalities.
-pub(crate) struct SerialWrapper<W: Write>(pub Serial<W>);
+pub struct SerialWrapper<W: Write>(pub Serial<W>);
 
 impl<W: Write> MutEventSubscriber for SerialWrapper<W> {
     fn process(&mut self, events: Events, ops: &mut EventOps) {

@@ -18,7 +18,6 @@ linux-loader = { version = "0.2.0", features = ["bzimage", "elf"] }
 vm-device = { git = "https://github.com/rust-vmm/vm-device", rev = "5847f12" }
 
 vm-memory = { version = "0.3.0", features = ["backend-mmap"] }
-vm-superio = "0.1.1"
 vmm-sys-util = "0.6.1"
 
 devices = { path = "../devices" }

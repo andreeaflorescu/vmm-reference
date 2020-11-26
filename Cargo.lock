@@ -71,6 +71,7 @@ dependencies = [
  "log",
  "vm-device",
  "vm-memory",
+ "vm-superio",
  "vm-virtio",
  "vmm-sys-util",
 ]
@@ -225,7 +226,6 @@ dependencies = [
  "linux-loader",
  "vm-device",
  "vm-memory",
- "vm-superio",
  "vm-vcpu",
  "vmm-sys-util",
 ]

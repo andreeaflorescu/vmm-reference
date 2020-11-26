@@ -34,7 +34,6 @@ use vm_device::bus::{MmioAddress, MmioRange};
 use vm_device::device_manager::{IoManager, MmioManager};
 use vm_device::resources::Resource;
 use vm_memory::{GuestAddress, GuestMemory, GuestMemoryMmap};
-use vm_superio::Serial;
 use vm_vcpu::vcpu::{cpuid::filter_cpuid, VcpuState};
 use vm_vcpu::vm::{self, KvmVm, VmState};
 use vmm_sys_util::{eventfd::EventFd, terminal::Terminal};
@@ -42,15 +41,13 @@ use vmm_sys_util::{eventfd::EventFd, terminal::Terminal};
 use devices::virtio::block::{Block, BlockArgs};
 use devices::virtio::net::{Net, NetArgs};
 use devices::virtio::MmioConfig;
+use devices::legacy::{Error as SerialError, Serial, SerialWrapper};
 
 mod boot;
 use boot::build_bootparams;
 
 mod config;
 pub use config::*;
-
-mod serial;
-use serial::SerialWrapper;
 
 /// First address past 32 bits.
 const FIRST_ADDR_PAST_32BITS: u64 = 1 << 32;
@@ -88,7 +85,7 @@ pub enum Error {
     /// Error configuring the kernel command line.
     Cmdline(cmdline::Error),
     /// Error setting up devices.
-    Device(serial::Error),
+    Device(SerialError),
     /// Event management error.
     EventManager(event_manager::Error),
     /// I/O error.
