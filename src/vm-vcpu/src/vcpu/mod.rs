@@ -1,16 +1,12 @@
 // Copyright 2020 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 
-use std::io::{self, stdin};
+use std::io;
 use std::result;
-use std::sync::{Arc, Mutex};
 
 use kvm_bindings::{kvm_fpu, kvm_regs, CpuId, Msrs};
 use kvm_ioctls::{VcpuExit, VcpuFd, VmFd};
-use vm_device::bus::PioAddress;
-use vm_device::device_manager::{IoManager, PioManager};
 use vm_memory::{Address, Bytes, GuestAddress, GuestMemory, GuestMemoryError};
-use vmm_sys_util::terminal::Terminal;
 
 mod gdt;
 use gdt::*;
@@ -50,6 +46,8 @@ pub enum Error {
     Mptable(mptable::Error),
     /// Failed to configure MSRs.
     SetModelSpecificRegistersCount,
+    /// Failed to run the vcpus.
+    RunVcpu(kvm_ioctls::Error),
 }
 
 /// Dedicated Result type.
@@ -64,26 +62,29 @@ pub struct VcpuState {
 ///
 /// This struct is a temporary (and quite terrible) placeholder until the
 /// [`vmm-vcpu`](https://github.com/rust-vmm/vmm-vcpu) crate is stabilized.
-pub struct KvmVcpu {
+pub struct KvmVcpu<ExitHandler: VcpuExitHandler> {
     /// KVM file descriptor for a vCPU.
     vcpu_fd: VcpuFd,
-    /// Device manager for bus accesses.
-    device_mgr: Arc<Mutex<IoManager>>,
+    exit_handler: ExitHandler,
     state: VcpuState,
     running: bool,
 }
 
-impl KvmVcpu {
+pub trait VcpuExitHandler: Send {
+    fn handle(&self, exit: VcpuExit);
+}
+
+impl <ExitHandler: VcpuExitHandler> KvmVcpu <ExitHandler> {
     /// Create a new vCPU.
-    pub fn new<M: GuestMemory>(
+    pub fn new<Mem: GuestMemory>(
         vm_fd: &VmFd,
-        device_mgr: Arc<Mutex<IoManager>>,
+        exit_handler: ExitHandler,
         state: VcpuState,
-        memory: &M,
+        memory: &Mem,
     ) -> Result<Self> {
         let vcpu = KvmVcpu {
             vcpu_fd: vm_fd.create_vcpu(state.id).map_err(Error::KvmIoctl)?,
-            device_mgr,
+            exit_handler,
             state,
             running: false,
         };
@@ -237,67 +238,14 @@ impl KvmVcpu {
     }
 
     /// vCPU emulation loop.
-    #[allow(clippy::if_same_then_else)]
     pub fn run(&mut self, instruction_pointer: GuestAddress) -> Result<()> {
         if !self.running {
             self.configure_regs(instruction_pointer)?;
             self.running = true;
         }
 
-        match self.vcpu_fd.run() {
-            Ok(exit_reason) => {
-                match exit_reason {
-                    VcpuExit::Shutdown | VcpuExit::Hlt => {
-                        println!("Guest shutdown: {:?}. Bye!", exit_reason);
-                        if stdin().lock().set_canon_mode().is_err() {
-                            eprintln!("Failed to set canon mode. Stdin will not echo.");
-                        }
-                        unsafe { libc::exit(0) };
-                    }
-                    VcpuExit::IoOut(addr, data) => {
-                        if 0x3f8 <= addr && addr < (0x3f8 + 8) {
-                            // Write at the serial port.
-                            if self
-                                .device_mgr
-                                .lock()
-                                .unwrap()
-                                .pio_write(PioAddress(addr), data)
-                                .is_err()
-                            {
-                                eprintln!("Failed to write to serial port");
-                            }
-                        } else if addr == 0x060 || addr == 0x061 || addr == 0x064 {
-                            // Write at the i8042 port.
-                            // See https://wiki.osdev.org/%228042%22_PS/2_Controller#PS.2F2_Controller_IO_Ports
-                        } else if 0x070 <= addr && addr <= 0x07f {
-                            // Write at the RTC port.
-                        } else {
-                            // Write at some other port.
-                        }
-                    }
-                    VcpuExit::IoIn(addr, data) => {
-                        if 0x3f8 <= addr && addr < (0x3f8 + 8) {
-                            // Read from the serial port.
-                            if self
-                                .device_mgr
-                                .lock()
-                                .unwrap()
-                                .pio_read(PioAddress(addr), data)
-                                .is_err()
-                            {
-                                eprintln!("Failed to read from serial port");
-                            }
-                        } else {
-                            // Read from some other port.
-                        }
-                    }
-                    _ => {
-                        // Unhandled KVM exit.
-                    }
-                }
-            }
-            Err(e) => eprintln!("Emulation error: {}", e),
-        }
+        let vcpu_exit = self.vcpu_fd.run().map_err(Error::RunVcpu)?;
+        self.exit_handler.handle(vcpu_exit);
 
         Ok(())
     }

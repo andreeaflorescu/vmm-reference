@@ -2,16 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 
 use std::io;
-use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
 use kvm_bindings::{kvm_pit_config, kvm_userspace_memory_region, KVM_PIT_SPEAKER_DUMMY};
 use kvm_ioctls::{Kvm, VmFd};
-use vm_device::device_manager::IoManager;
 use vm_memory::{Address, GuestAddress, GuestMemory, GuestMemoryRegion};
 use vmm_sys_util::eventfd::EventFd;
 
-use crate::vcpu::{self, mptable, KvmVcpu, VcpuState};
+use crate::vcpu::{self, mptable, KvmVcpu, VcpuState, VcpuExitHandler};
 use std::io::ErrorKind;
 
 /// Defines the state from which a `KvmVm` is initialized.
@@ -23,14 +21,14 @@ pub struct VmState {
 ///
 /// Provides abstractions for working with a VM. Once a generic Vm trait will be available,
 /// this type will become on of the concrete implementations.
-pub struct KvmVm {
+pub struct KvmVm<H: VcpuExitHandler> {
     fd: VmFd,
     state: VmState,
     // Only one of `vcpus` or `vcpu_handles` can be active at a time.
     // To create the `vcpu_handles` the `vcpu` vector is drained.
     // A better abstraction should be used to represent this behavior.
-    vcpus: Vec<KvmVcpu>,
-    vcpu_handles: Vec<JoinHandle<KvmVcpu>>,
+    vcpus: Vec<KvmVcpu<H>>,
+    vcpu_handles: Vec<JoinHandle<KvmVcpu<H>>>,
 }
 
 #[derive(Debug)]
@@ -58,7 +56,7 @@ pub enum Error {
 /// Dedicated [`Result`](https://doc.rust-lang.org/std/result/) type.
 pub type Result<T> = std::result::Result<T, Error>;
 
-impl KvmVm {
+impl <H: 'static + VcpuExitHandler> KvmVm <H> {
     /// Create a new `KvmVm`.
     pub fn new<M: GuestMemory>(kvm: &Kvm, vm_state: VmState, guest_memory: &M) -> Result<Self> {
         let vm_fd = kvm.create_vm().map_err(Error::CreateVm)?;
@@ -138,11 +136,11 @@ impl KvmVm {
     /// Create a Vcpu based on the passed configuration.
     pub fn create_vcpu<M: GuestMemory>(
         &mut self,
-        bus: Arc<Mutex<IoManager>>,
+        exit_handler: H,
         vcpu_state: VcpuState,
         memory: &M,
     ) -> Result<()> {
-        let vcpu = KvmVcpu::new(&self.fd, bus, vcpu_state, memory).map_err(Error::CreateVcpu)?;
+        let vcpu = KvmVcpu::new(&self.fd, exit_handler, vcpu_state, memory).map_err(Error::CreateVcpu)?;
         self.vcpus.push(vcpu);
         Ok(())
     }
@@ -169,7 +167,7 @@ impl KvmVm {
         }
 
         for mut vcpu in self.vcpus.drain(..) {
-            let vcpu_handle: JoinHandle<KvmVcpu> = thread::Builder::new()
+            let vcpu_handle: JoinHandle<KvmVcpu<H>> = thread::Builder::new()
                 .spawn(move || loop {
                     let _ = vcpu.run(vcpu_run_addr);
                 })
@@ -188,11 +186,18 @@ mod tests {
     use crate::vcpu::mptable::MAX_SUPPORTED_CPUS;
     use crate::vm::{Error, KvmVm, VmState};
     use kvm_bindings::CpuId;
-    use kvm_ioctls::Kvm;
+    use kvm_ioctls::{Kvm, VcpuExit};
     use vm_memory::{GuestAddress, GuestMemoryMmap};
 
+    struct ExitHanlder {}
+    impl VcpuExitHandler for ExitHanlder {
+        fn handle(&self, exit: VcpuExit) {
+            println!("{:#?}", exit);
+        }
+    }
+
     // A helper function that creates a KvmVm with a default memory configuration.
-    fn default_vm(num_vcpus: u8) -> Result<(KvmVm, GuestMemoryMmap)> {
+    fn default_vm(num_vcpus: u8) -> Result<(KvmVm<ExitHanlder>, GuestMemoryMmap)> {
         let kvm = Kvm::new().unwrap();
 
         let vm_state = VmState { num_vcpus };
@@ -222,7 +227,7 @@ mod tests {
             ranges.push((GuestAddress(i * 100), 100))
         }
         let guest_memory = GuestMemoryMmap::from_ranges(&ranges).unwrap();
-        let res = KvmVm::new(&kvm, vm_state, &guest_memory);
+        let res = KvmVm::<ExitHanlder>::new(&kvm, vm_state, &guest_memory);
         assert!(matches!(res, Err(Error::NotEnoughMemorySlots)));
     }
 
@@ -231,7 +236,7 @@ mod tests {
         let kvm = Kvm::new().unwrap();
         let vm_state = VmState { num_vcpus: 1 };
 
-        let vm = KvmVm {
+        let vm = KvmVm::<ExitHanlder> {
             vcpus: Vec::new(),
             vcpu_handles: Vec::new(),
             state: vm_state,
@@ -259,12 +264,11 @@ mod tests {
         let num_vcpus = 2;
 
         let (mut vm, guest_memory) = default_vm(num_vcpus).unwrap();
-        let io_manager = Arc::new(Mutex::new(IoManager::new()));
 
         for i in 0..vm.state.num_vcpus {
             // We're creating a dummy Vcpu.
             vm.create_vcpu(
-                io_manager.clone(),
+                ExitHanlder{},
                 VcpuState {
                     cpuid: CpuId::new(1),
                     id: i,

@@ -14,10 +14,7 @@ use std::sync::{Arc, Mutex};
 
 use event_manager::{EventManager, MutEventSubscriber, SubscriberOps};
 use kvm_bindings::{KVM_API_VERSION, KVM_MAX_CPUID_ENTRIES};
-use kvm_ioctls::{
-    Cap::{self, Ioeventfd, Irqchip, Irqfd, UserMemory},
-    Kvm,
-};
+use kvm_ioctls::{Cap::{self, Ioeventfd, Irqchip, Irqfd, UserMemory}, Kvm, VcpuExit};
 use linux_loader::bootparam::boot_params;
 use linux_loader::cmdline;
 use linux_loader::configurator::{
@@ -31,9 +28,11 @@ use linux_loader::loader::{
 };
 use vm_device::device_manager::IoManager;
 use vm_device::resources::Resource;
+use vm_device::bus::PioAddress;
+use vm_device::device_manager::PioManager;
 use vm_memory::{GuestAddress, GuestMemory, GuestMemoryMmap};
 use vm_superio::Serial;
-use vm_vcpu::vcpu::{cpuid::filter_cpuid, VcpuState};
+use vm_vcpu::vcpu::{cpuid::filter_cpuid, VcpuState, VcpuExitHandler};
 use vm_vcpu::vm::{self, KvmVm, VmState};
 use vmm_sys_util::{eventfd::EventFd, terminal::Terminal};
 
@@ -112,10 +111,68 @@ impl std::convert::From<vm::Error> for Error {
 /// Dedicated [`Result`](https://doc.rust-lang.org/std/result/) type.
 pub type Result<T> = std::result::Result<T, Error>;
 
+struct ExitHandler {
+    device_mgr: Arc<Mutex<IoManager>>,
+}
+
+impl VcpuExitHandler for ExitHandler {
+    fn handle(&self, exit_reason: VcpuExit) {
+        match exit_reason {
+            VcpuExit::Shutdown | VcpuExit::Hlt => {
+                println!("Guest shutdown: {:?}. Bye!", exit_reason);
+                if stdin().lock().set_canon_mode().is_err() {
+                    eprintln!("Failed to set canon mode. Stdin will not echo.");
+                }
+                unsafe { libc::exit(0) };
+            }
+            VcpuExit::IoOut(addr, data) => {
+                if 0x3f8 <= addr && addr < (0x3f8 + 8) {
+                    // Write at the serial port.
+                    if self
+                        .device_mgr
+                        .lock()
+                        .unwrap()
+                        .pio_write(PioAddress(addr), data)
+                        .is_err()
+                    {
+                        eprintln!("Failed to write to serial port");
+                    }
+                } else if addr == 0x060 || addr == 0x061 || addr == 0x064 {
+                    // Write at the i8042 port.
+                    // See https://wiki.osdev.org/%228042%22_PS/2_Controller#PS.2F2_Controller_IO_Ports
+                } else if 0x070 <= addr && addr <= 0x07f {
+                    // Write at the RTC port.
+                } else {
+                    // Write at some other port.
+                }
+            }
+            VcpuExit::IoIn(addr, data) => {
+                if 0x3f8 <= addr && addr < (0x3f8 + 8) {
+                    // Read from the serial port.
+                    if self
+                        .device_mgr
+                        .lock()
+                        .unwrap()
+                        .pio_read(PioAddress(addr), data)
+                        .is_err()
+                    {
+                        eprintln!("Failed to read from serial port");
+                    }
+                } else {
+                    // Read from some other port.
+                }
+            }
+            _ => {
+                // Unhandled KVM exit.
+            }
+        }
+    }
+}
+
 /// A live VMM.
 pub struct VMM {
     kvm: Kvm,
-    vm: KvmVm,
+    vm: KvmVm<ExitHandler>,
     kernel_cfg: KernelConfig,
     guest_memory: GuestMemoryMmap,
     // The `device_mgr` is an Arc<Mutex> so that it can be shared between
@@ -341,8 +398,12 @@ impl VMM {
             filter_cpuid(&self.kvm, index as usize, vcpu_cfg.num as usize, &mut cpuid);
 
             let vcpu_state = VcpuState { cpuid, id: index };
+            let vcpu_exit_handler = ExitHandler {
+                device_mgr: self.device_mgr.clone(),
+            };
+
             self.vm
-                .create_vcpu(self.device_mgr.clone(), vcpu_state, &self.guest_memory)?;
+                .create_vcpu(vcpu_exit_handler, vcpu_state, &self.guest_memory)?;
         }
 
         Ok(())
