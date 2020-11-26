@@ -1,0 +1,71 @@
+# Download disk.ext4 to vmm-reference/resources/disk/.
+
+# Mount.
+sudo su
+mkdir -p /mnt/disk
+mount vmm-reference/resources/disk/disk.ext4 /mnt/disk/
+cd /mnt/disk/
+
+# Network config: set IP to 192.168.241.2/30. This way it will work with the
+# same TAP as the plain busybox image.
+cat >etc/netplan/50-cloud-init.yaml <<EOF
+network:
+    ethernets:
+        eth0:
+            dhcp4: false
+            addresses: [192.168.241.2/30]
+            gateway4: 192.168.241.1
+            nameservers:
+              addresses: [8.8.8.8,8.8.4.4,192.168.241.1]
+    version: 2
+EOF
+
+# Webserver config: copy resources from vmm-reference repo.
+mkdir -p www
+cp -R ~/vmm-reference/resources/kernel/www/* www/
+
+# Webserver config: download the same webserver as before.
+wget https://busybox.net/downloads/binaries/1.26.2-i686/busybox
+mv busybox bin/
+chmod +x bin/busybox
+
+# Create a service so that it autostarts.
+cat >etc/systemd/system/demo-server.service <<EOF
+[Unit]
+Description=re:Invent 2020 demo web server
+After=network.target
+
+[Service]
+Type=forking
+Restart=always
+RestartSec=1
+ExecStart=/bin/busybox httpd -p 80 -h /www
+
+[Install]
+WantedBy=multi-user.target
+
+EOF
+
+# Make it autostart.
+echo "enable demo-server.service" >>usr/lib/systemd/system-preset/90-systemd.preset
+ln -s etc/systemd/system/demo-server.service etc/systemd/system/multi-user.target.wants/demo-server.service
+
+# Done!
+
+cd -
+sync
+umount /mnt/disk
+fsck.ext4 vmm-reference/resources/disk/disk.ext4
+
+# If it complains about an old e2fsck:
+
+wget https://netcologne.dl.sourceforge.net/project/e2fsprogs/e2fsprogs/v1.45.6/e2fsprogs-1.45.6.tar.gz
+tar xzvf e2fsprogs-1.45.6.tar.gz
+cd e2fsprogs-1.45.6
+./configure
+make -j
+sudo make install
+cd -
+
+fsck.ext4 vmm-reference/resources/disk/disk.ext4
+

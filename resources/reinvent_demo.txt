@@ -49,3 +49,19 @@ curl --form "file1=@demo.txt"  http://192.168.241.2/cgi-bin/upload.cgi
 curl http://192.168.241.2/uploaded.out
 # GET; should print the contents of the uploaded file
 
+# ===============
+#
+# ubuntu image: see disk/reinvent_demo_disk_setup.txt for setup instruction
+
+target/debug/vmm-reference                      \
+    --kernel path=resources/kernel/vmlinux.bin  \
+    --net tap=vmtap35                           \
+    --block path=$PWD/resources/disk/disk.ext4
+
+# ==============
+#
+# test the webserver same as above
+#
+# troubleshooting:
+# in guest:
+# systemctl status demo-server
