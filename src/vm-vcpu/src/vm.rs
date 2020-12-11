@@ -10,8 +10,10 @@ use kvm_ioctls::{Kvm, VmFd};
 use vm_device::device_manager::IoManager;
 use vm_memory::{Address, GuestAddress, GuestMemory, GuestMemoryRegion};
 use vmm_sys_util::eventfd::EventFd;
+use vmm_sys_util::signal::{Killable, SIGRTMIN};
+use vmm_sys_util::errno::Error as Errno;
 
-use crate::vcpu::{self, mptable, KvmVcpu, VcpuState};
+use crate::vcpu::{self, mptable, KvmVcpu, VcpuState, VcpuRunState};
 
 /// Defines the state from which a `KvmVm` is initialized.
 pub struct VmState {
@@ -29,9 +31,10 @@ pub struct KvmVm<EH: ExitHandler + Send> {
     // To create the `vcpu_handles` the `vcpu` vector is drained.
     // A better abstraction should be used to represent this behavior.
     vcpus: Vec<KvmVcpu>,
-    vcpu_handles: Vec<JoinHandle<()>>,
+    pub vcpu_handles: Vec<JoinHandle<()>>,
     exit_handler: EH,
     vcpu_barrier: Arc<Barrier>,
+    vcpu_run_state: Arc<VcpuRunState>,
 }
 
 #[derive(Debug)]
@@ -52,6 +55,10 @@ pub enum Error {
     RunVcpus(io::Error),
     /// Failed to configure mptables.
     Mptable(mptable::Error),
+    /// Failed to pause the vcpus.
+    PauseVcpus(Errno),
+    /// Failed to resume vcpus.
+    ResumeVcpus(Errno),
 }
 
 // TODO: Implement std::error::Error for Error.
@@ -66,6 +73,20 @@ pub trait ExitHandler: Clone {
     fn kick(&self) -> io::Result<()>;
 }
 
+/// Represents the current state of the VM.
+#[derive(Debug, PartialEq)]
+pub enum VmRunState {
+    Running,
+    Suspending,
+    Exiting,
+}
+
+impl Default for VmRunState {
+    fn default() -> Self {
+        Self::Running
+    }
+}
+
 impl<EH: 'static + ExitHandler + Send> KvmVm<EH> {
     /// Create a new `KvmVm`.
     pub fn new<M: GuestMemory>(
@@ -76,6 +97,8 @@ impl<EH: 'static + ExitHandler + Send> KvmVm<EH> {
     ) -> Result<Self> {
         let vm_fd = Arc::new(kvm.create_vm().map_err(Error::CreateVm)?);
 
+        let vcpu_run_state = Arc::new(VcpuRunState::default());
+
         let vm = KvmVm {
             vcpu_barrier: Arc::new(Barrier::new(vm_state.num_vcpus as usize)),
             state: vm_state,
@@ -83,6 +106,7 @@ impl<EH: 'static + ExitHandler + Send> KvmVm<EH> {
             vcpus: Vec::new(),
             vcpu_handles: Vec::new(),
             exit_handler,
+            vcpu_run_state,
         };
 
         vm.configure_memory_regions(guest_memory, kvm)?;
@@ -162,7 +186,7 @@ impl<EH: 'static + ExitHandler + Send> KvmVm<EH> {
         vcpu_state: VcpuState,
         memory: &M,
     ) -> Result<()> {
-        let vcpu = KvmVcpu::new(&self.fd, bus, vcpu_state, self.vcpu_barrier.clone(), memory)
+        let vcpu = KvmVcpu::new(&self.fd, bus, vcpu_state, self.vcpu_barrier.clone(), self.vcpu_run_state.clone(), memory)
             .map_err(Error::CreateVcpu)?;
         self.vcpus.push(vcpu);
         Ok(())
@@ -189,12 +213,15 @@ impl<EH: 'static + ExitHandler + Send> KvmVm<EH> {
             return Err(Error::RunVcpus(io::Error::from(ErrorKind::InvalidInput)));
         }
 
-        for mut vcpu in self.vcpus.drain(..) {
+        KvmVcpu::setup_signal_handler().unwrap();
+
+        for (id, mut vcpu) in self.vcpus.drain(..).enumerate() {
             let vcpu_exit_handler = self.exit_handler.clone();
             let vcpu_handle = thread::Builder::new()
+                .name(format!("vcpu_{}", id))
                 .spawn(move || {
                     // TODO: Check the result of both vcpu run & kick.
-                    let _ = vcpu.run(vcpu_run_addr);
+                    let _ = vcpu.run(vcpu_run_addr).unwrap();
                     let _ = vcpu_exit_handler.kick();
                 })
                 .map_err(Error::RunVcpus)?;
@@ -203,18 +230,47 @@ impl<EH: 'static + ExitHandler + Send> KvmVm<EH> {
 
         Ok(())
     }
+
+    /// Pause a running VM. If the VM is already paused, calling this is a no-op.
+    pub fn pause(&self) -> Result<()> {
+        self.vcpu_run_state.set_and_notify(VmRunState::Suspending);
+        self.vcpu_handles.iter().try_for_each(|handle| {
+            handle.kill(0 + SIGRTMIN()).map_err(Error::PauseVcpus)
+        })
+    }
+
+    pub fn resume(&self) -> Result<()> {
+        self.vcpu_run_state.set_and_notify(VmRunState::Running);
+        self.vcpu_handles.iter().try_for_each(|handle| {
+            handle.kill(0 + SIGRTMIN()).map_err(Error::ResumeVcpus)
+        })
+    }
+
+    /// Shutdown a VM by signaling the running VCPUs.
+    pub fn shutdown(&mut self) {
+        self.vcpu_run_state.set_and_notify(VmRunState::Exiting);
+        self.vcpu_handles.drain(..).for_each(|handle| {
+            let _ = handle.kill(0 + SIGRTMIN());
+            let _ = handle.join();
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    use crate::vcpu::mptable::MAX_SUPPORTED_CPUS;
     use crate::vm::{Error, KvmVm, VmState};
-    use kvm_bindings::CpuId;
     use kvm_ioctls::Kvm;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use vm_memory::{GuestAddress, GuestMemoryMmap};
+    use vm_memory::{GuestAddress, GuestMemoryMmap, Bytes};
+    use crate::vcpu::mptable::MAX_SUPPORTED_CPUS;
+    use crate::vcpu::cpuid::filter_cpuid;
+    use std::thread::sleep;
+    use std::time::Duration;
+    use std::io::stdin;
+    use vmm_sys_util::terminal::Terminal;
+
 
     #[derive(Clone, Default)]
     struct WrappedExitHandler(Arc<DummyExitHandler>);
@@ -232,22 +288,48 @@ mod tests {
     }
 
     // A helper function that creates a KvmVm with a default memory configuration.
-    fn default_vm(num_vcpus: u8) -> Result<(KvmVm<WrappedExitHandler>, GuestMemoryMmap)> {
-        let kvm = Kvm::new().unwrap();
-
+    fn default_vm(kvm: &Kvm, num_vcpus: u8) -> Result<(KvmVm<WrappedExitHandler>, GuestMemoryMmap)> {
         let vm_state = VmState { num_vcpus };
 
-        let mem_size = (128 << 20) as usize;
+        let mem_size = 1024 << 20;
         let guest_memory = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), mem_size)]).unwrap();
         let exit_handler = WrappedExitHandler::default();
         let vm = KvmVm::new(&kvm, vm_state, &guest_memory, exit_handler)?;
         Ok((vm, guest_memory))
     }
 
+    // Helper function for configuring and running a VM.
+    fn create_and_run(num_vcpus: u8, asm_code: &[u8]) -> KvmVm<WrappedExitHandler> {
+        let kvm = Kvm::new().unwrap();
+        let (mut vm, guest_memory) = default_vm(&kvm, num_vcpus).unwrap();
+        let io_manager = Arc::new(Mutex::new(IoManager::new()));
+        let base_cpuid = kvm.get_supported_cpuid(kvm_bindings::KVM_MAX_CPUID_ENTRIES).unwrap();
+        let load_addr = GuestAddress(0x100_0000);
+        for i in 0..vm.state.num_vcpus {
+            let mut cpuid = base_cpuid.clone();
+            filter_cpuid(&kvm, i as usize, vm.state.num_vcpus as usize, &mut cpuid);
+            vm.create_vcpu(io_manager.clone(), VcpuState {
+                cpuid,
+                id: i,
+            }, &guest_memory).unwrap();
+        }
+        vm.register_irqfd(&EventFd::new(0).unwrap(), 4).unwrap();
+
+        assert_eq!(vm.vcpus.len() as u8, num_vcpus);
+        assert_eq!(vm.vcpu_handles.len() as u8, 0);
+
+        guest_memory.write_slice(asm_code, load_addr).unwrap();
+        stdin().lock().set_raw_mode().unwrap();
+        vm.run(load_addr).unwrap();
+
+        vm
+    }
+
     #[test]
     fn test_failed_setup_mptable() {
         let num_vcpus = (MAX_SUPPORTED_CPUS + 1) as u8;
-        let res = default_vm(num_vcpus);
+        let kvm = Kvm::new().unwrap();
+        let res = default_vm(&kvm, num_vcpus);
         assert!(matches!(res, Err(Error::Mptable(_))));
     }
 
@@ -279,6 +361,7 @@ mod tests {
             state: vm_state,
             fd: Arc::new(kvm.create_vm().unwrap()),
             exit_handler: WrappedExitHandler::default(),
+            vcpu_run_state: Arc::new(VcpuRunState::default()),
         };
 
         // Setting up the irq_controller twice should return an error.
@@ -291,33 +374,42 @@ mod tests {
     fn test_invalid_vcpu_run() {
         // We're specifying in the VmState that we want to run one vcpu, but we do not create
         // any. This should return an error.
-        let (mut vm, _guest_memory) = default_vm(1).unwrap();
+        let kvm = Kvm::new().unwrap();
+        let (mut vm, _guest_memory) = default_vm(&kvm, 1).unwrap();
         assert!(
             matches!(vm.run(GuestAddress(0x1000_0000)), Err(Error::RunVcpus(e)) if e.kind() == ErrorKind::InvalidInput)
         );
     }
 
     #[test]
-    fn test_create_vcpu() {
+    fn test_shutdown() {
         let num_vcpus = 2;
+        let asm_code = &[
+            0xba, 0xf8, 0x03, /* mov $0x3f8, %dx */
+            0x00, 0xd8, /* add %bl, %al */
+            0x04, b'0', /* add $'0', %al */
+            0xee, /* out %al, %dx */
+            0xec, /* in %dx, %al */
+            0xc6, 0x06, 0x00, 0x80, 0x00, /* movl $0, (0x8000); This generates a MMIO Write.*/
+            0x8a, 0x16, 0x00, 0x80, /* movl (0x8000), %dl; This generates a MMIO Read.*/
+            0xf4, /* hlt */
+            // 0xeb, 0xfe, /* run infinite loop */
+        ];
 
-        let (mut vm, guest_memory) = default_vm(num_vcpus).unwrap();
-        let io_manager = Arc::new(Mutex::new(IoManager::new()));
-
-        for i in 0..vm.state.num_vcpus {
-            // We're creating a dummy Vcpu.
-            vm.create_vcpu(
-                io_manager.clone(),
-                VcpuState {
-                    cpuid: CpuId::new(1),
-                    id: i,
-                },
-                &guest_memory,
-            )
-            .unwrap();
+        let mut vm = create_and_run(num_vcpus, asm_code);
+        for vcpu in vm.vcpu_handles {
+            vcpu.join().unwrap();
         }
-
-        assert_eq!(vm.vcpus.len() as u8, num_vcpus);
-        assert_eq!(vm.vcpu_handles.len() as u8, 0);
+        // sleep(Duration::new(1, 0));
+        //
+        // vm.pause().unwrap();
+        // assert_eq!(vm.exit_handler.0.kicked.load(Ordering::Relaxed), false);
+        //
+        // vm.shutdown();
+        //
+        // assert_eq!(vm.exit_handler.0.kicked.load(Ordering::Relaxed), true);
+        // assert_eq!(vm.vcpus.len(), 0);
+        // assert_eq!(vm.vcpu_handles.len(), 0);
+        // assert_eq!(*vm.vcpu_run_state.vm_state.lock().unwrap(), VmRunState::Exiting);
     }
 }

@@ -196,6 +196,7 @@ dependencies = [
  "kvm-bindings",
  "kvm-ioctls",
  "libc",
+ "linux-loader",
  "vm-device",
  "vm-memory",
  "vmm-sys-util",

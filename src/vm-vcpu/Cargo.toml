@@ -20,3 +20,4 @@ vm-device = { git = "https://github.com/rust-vmm/vm-device", rev = "5847f12" }
 
 [dev-dependencies]
 vm-memory = { version = "0.4.0", features = ["backend-mmap"] }
+linux-loader = { version = ">0.1.0", features = ["elf"] }

@@ -35,7 +35,7 @@ use linux_loader::loader::{
 use vm_device::bus::{MmioAddress, MmioRange};
 use vm_device::device_manager::IoManager;
 use vm_device::resources::Resource;
-use vm_memory::{GuestAddress, GuestMemory, GuestMemoryMmap};
+use vm_memory::{GuestAddress, GuestMemory, GuestMemoryMmap, Bytes};
 use vm_superio::Serial;
 use vm_vcpu::vcpu::{cpuid::filter_cpuid, VcpuState};
 use vm_vcpu::vm::{self, ExitHandler, KvmVm, VmState};
@@ -258,6 +258,21 @@ impl VMM {
             eprintln!("Failed to set raw mode on terminal. Stdin will echo.");
         }
 
+        println!("load_addr: {:#?}", kernel_load_addr);
+        let asm_code = &[
+            0xba, 0xf8, 0x03, /* mov $0x3f8, %dx */
+            // 0x00, 0xd8, /* add %bl, %al */
+            // 0x04, b'0', /* add $'0', %al */
+            // 0xee, /* out %al, %dx */
+            // 0xec, /* in %dx, %al */
+            // 0xc6, 0x06, 0x00, 0x80, 0x00, /* movl $0, (0x8000); This generates a MMIO Write.*/
+            // 0x8a, 0x16, 0x00, 0x80, /* movl (0x8000), %dl; This generates a MMIO Read.*/
+            0xf4, /* hlt */
+            // 0xeb, 0xfe, /* run infinite loop */
+        ];
+
+        let kernel_load_addr = GuestAddress(0x100_0000);
+        self.guest_memory.write_slice(asm_code, kernel_load_addr).unwrap();
         self.vm.run(kernel_load_addr).map_err(Error::Vm)?;
         loop {
             match self.event_mgr.run() {
@@ -275,6 +290,7 @@ impl VMM {
                 break;
             }
         }
+        self.vm.shutdown();
 
         Ok(())
     }
