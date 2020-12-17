@@ -53,7 +53,7 @@ def start_vmm_process(kernel, disk):
     himem_start = 1048576
 
     # vCPU config
-    num_vcpus = 1
+    num_vcpus = 4
 
     build_cmd = "cargo build --release"
     subprocess.run(build_cmd, shell=True, check=True)
