@@ -10,6 +10,7 @@ use std::os::raw::c_int;
 use std::result;
 use std::sync::{Arc, Barrier, Condvar, Mutex};
 
+#[cfg(target_arch = "x86_64")]
 use kvm_bindings::{kvm_fpu, kvm_regs, CpuId};
 use kvm_ioctls::{VcpuExit, VcpuFd, VmFd};
 use vm_device::bus::{MmioAddress, PioAddress};
@@ -21,11 +22,16 @@ use vmm_sys_util::terminal::Terminal;
 
 use utils::debug;
 
+#[cfg(target_arch = "x86_64")]
 mod gdt;
+#[cfg(target_arch = "x86_64")]
 use gdt::*;
+#[cfg(target_arch = "x86_64")]
 mod interrupts;
-use crate::vm::VmRunState;
+#[cfg(target_arch = "x86_64")]
 use interrupts::*;
+
+use crate::vm::VmRunState;
 
 pub mod cpuid;
 pub mod mpspec;
@@ -57,6 +63,7 @@ pub enum Error {
     /// Error issuing an ioctl to KVM.
     KvmIoctl(kvm_ioctls::Error),
     /// Failed to configure mptables.
+    #[cfg(target_arch = "x86_64")]
     Mptable(mptable::Error),
     /// Failed to initialize MSRS.
     CreateMsrs,
@@ -73,6 +80,7 @@ pub type Result<T> = result::Result<T, Error>;
 
 pub struct VcpuState {
     pub id: u8,
+    #[cfg(target_arch = "x86_64")]
     pub cpuid: CpuId,
 }
 
@@ -126,20 +134,26 @@ impl KvmVcpu {
             run_state,
         };
 
-        vcpu.configure_cpuid(&vcpu.state.cpuid)?;
-        vcpu.configure_msrs()?;
-        vcpu.configure_sregs(memory)?;
-        vcpu.configure_lapic()?;
-        vcpu.configure_fpu()?;
+        #[cfg(target_arch = "x86_64")]
+        {
+            vcpu.configure_cpuid(&vcpu.state.cpuid)?;
+            vcpu.configure_msrs()?;
+            vcpu.configure_sregs(memory)?;
+            vcpu.configure_lapic()?;
+            vcpu.configure_fpu()?;
+        }
+
         Ok(vcpu)
     }
 
     /// Set CPUID.
+    #[cfg(target_arch = "x86_64")]
     fn configure_cpuid(&self, cpuid: &CpuId) -> Result<()> {
         self.vcpu_fd.set_cpuid2(cpuid).map_err(Error::KvmIoctl)
     }
 
     /// Configure MSRs.
+    #[cfg(target_arch = "x86_64")]
     fn configure_msrs(&self) -> Result<()> {
         let msrs = msrs::create_boot_msr_entries()?;
         self.vcpu_fd
@@ -155,6 +169,7 @@ impl KvmVcpu {
     }
 
     /// Configure regs.
+    #[cfg(target_arch = "x86_64")]
     fn configure_regs(&self, instruction_pointer: GuestAddress) -> Result<()> {
         let regs = kvm_regs {
             // EFLAGS (RFLAGS in 64-bit mode) always has bit 1 set.
@@ -176,6 +191,7 @@ impl KvmVcpu {
     }
 
     /// Configure sregs.
+    #[cfg(target_arch = "x86_64")]
     fn configure_sregs<M: GuestMemory>(&self, guest_memory: &M) -> Result<()> {
         let mut sregs = self.vcpu_fd.get_sregs().map_err(Error::KvmIoctl)?;
 
@@ -244,6 +260,7 @@ impl KvmVcpu {
     }
 
     /// Configure FPU.
+    #[cfg(target_arch = "x86_64")]
     fn configure_fpu(&self) -> Result<()> {
         let fpu = kvm_fpu {
             fcw: 0x37f,
@@ -254,6 +271,7 @@ impl KvmVcpu {
     }
 
     /// Configures LAPICs. LAPIC0 is set for external interrupts, LAPIC1 is set for NMI.
+    #[cfg(target_arch = "x86_64")]
     fn configure_lapic(&self) -> Result<()> {
         let mut klapic = self.vcpu_fd.get_lapic().map_err(Error::KvmIoctl)?;
 
@@ -313,6 +331,7 @@ impl KvmVcpu {
     /// vCPU emulation loop.
     #[allow(clippy::if_same_then_else)]
     pub fn run(&mut self, instruction_pointer: GuestAddress) -> Result<()> {
+        #[cfg(target_arch = "x86_64")]
         self.configure_regs(instruction_pointer)?;
         self.init_tls()?;
 
