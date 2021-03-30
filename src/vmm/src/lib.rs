@@ -36,8 +36,8 @@ use linux_loader::loader::{
     elf::{self, Elf},
     load_cmdline,
 };
-use vm_device::bus::{MmioAddress, MmioRange};
-use vm_device::device_manager::IoManager;
+use vm_device::bus::{MmioAddress, MmioRange, BusManager};
+use vm_device::device_manager::{IoManager, MmioManager};
 use vm_device::resources::Resource;
 use vm_memory::{GuestAddress, GuestMemory, GuestMemoryMmap, GuestMemoryRegion};
 use vm_superio::Serial;
@@ -57,7 +57,7 @@ use vm_vcpu::vcpu::VcpuState;
 use vm_vcpu::vm::{self, ExitHandler, KvmVm, VmState};
 
 #[cfg(target_arch = "aarch64")]
-use arch::{create_fdt, AARCH64_PHYS_MEM_START, AARCH64_FDT_MAX_SIZE};
+use arch::{create_fdt, AARCH64_PHYS_MEM_START, AARCH64_FDT_MAX_SIZE, AARCH64_MMIO_BASE};
 
 use std::convert::TryInto;
 
@@ -255,7 +255,6 @@ impl TryFrom<VMMConfig> for VMM {
         };
 
         vmm.create_vcpus(&config.vcpu_config)?;
-        #[cfg(target_arch = "x86_64")]
         vmm.add_serial_console()?;
 
         // Adding the virtio devices. We'll come up with a cleaner abstraction for `Env`.
@@ -417,7 +416,6 @@ impl VMM {
     }
 
     // Create and add a serial console to the VMM.
-    #[cfg(target_arch = "x86_64")]
     fn add_serial_console(&mut self) -> Result<()> {
         // Create the serial console.
         let interrupt_evt = EventFd::new(libc::EFD_NONBLOCK).map_err(Error::IO)?;
@@ -430,21 +428,31 @@ impl VMM {
         // See more IRQ assignments & info: https://tldp.org/HOWTO/Serial-HOWTO-8.html
         self.vm.register_irqfd(&interrupt_evt, 4)?;
 
-        self.kernel_cfg.cmdline.push_str(" console=ttyS0");
-        // Put it on the bus.
-        // Safe to use expect() because the device manager is instantiated in new(), there's no
-        // default implementation, and the field is private inside the VMM struct.
-        self.device_mgr
-            .lock()
-            .unwrap()
-            .register_pio_resources(
-                serial.clone(),
-                &[Resource::PioAddressRange {
-                    base: 0x3f8,
-                    size: 0x8,
-                }],
-            )
-            .unwrap();
+        #[cfg(target_arch = "x86_64")] {
+            self.kernel_cfg.cmdline.push_str(" console=ttyS0");
+            // Put it on the bus.
+            // Safe to use expect() because the device manager is instantiated in new(), there's no
+            // default implementation, and the field is private inside the VMM struct.
+            self.device_mgr
+                .lock()
+                .unwrap()
+                .register_pio_resources(
+                    serial.clone(),
+                    &[Resource::PioAddressRange {
+                        base: 0x3f8,
+                        size: 0x8,
+                    }],
+                )
+                .unwrap();
+        }
+
+        #[cfg(target_arch = "aarch64")] {
+            self.kernel_cfg.cmdline.push_str(&format!("earlycon=uart,mmio,0x{:08x}", AARCH64_MMIO_BASE));
+            let range = MmioRange::new(MmioAddress(AARCH64_MMIO_BASE), 0x1000).unwrap();
+            let mmio_cfg = MmioConfig { range, gsi: 4 };
+            use vm_device::DeviceMmio;
+            self.device_mgr.lock().unwrap().register_mmio(range, serial.clone());
+        }
 
         // Hook it to event management.
         self.event_mgr.add_subscriber(serial);

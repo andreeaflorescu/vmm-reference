@@ -4,14 +4,12 @@ use std::convert::TryInto;
 use std::io::{stdin, Read, Write};
 
 use event_manager::{EventOps, Events, MutEventSubscriber};
-use vm_device::{
-    bus::{PioAddress, PioAddressValue},
-    MutDevicePio,
-};
+use vm_device::{bus::{PioAddress, PioAddressValue}, MutDevicePio, MutDeviceMmio};
 use vm_superio::Serial;
 use vmm_sys_util::epoll::EventSet;
 
 use utils::debug;
+use vm_device::bus::MmioAddress;
 
 /// Newtype for implementing `event-manager` functionalities.
 pub(crate) struct SerialWrapper<W: Write>(pub Serial<W>);
@@ -89,6 +87,44 @@ impl<W: Write> MutDevicePio for SerialWrapper<W> {
     }
 }
 
+impl<W: Write> MutDeviceMmio for SerialWrapper<W> {
+    fn mmio_read(&mut self, base: MmioAddress, offset: u64, data: &mut [u8]) {
+        // TODO: this function can't return an Err, so we'll mark error conditions
+        // (data being more than 1 byte, offset overflowing an u8) with logs & metrics.
+        if data.len() != 1 {
+            debug!(
+                "Serial console invalid data length on PIO read: {}",
+                data.len()
+            );
+        }
+
+        match offset.try_into() {
+            Ok(offset) => data[0] = self.0.read(offset),
+            Err(_) => debug!("Invalid serial console read offset."),
+        }
+    }
+
+    fn mmio_write(&mut self, base: MmioAddress, offset: u64, data: &[u8]) {
+        // TODO: this function can't return an Err, so we'll mark error conditions
+        // (data being more than 1 byte, offset overflowing an u8) with logs & metrics.
+        if data.len() != 1 {
+            debug!(
+                "Serial console invalid data length on PIO write: {}",
+                data.len()
+            );
+        }
+
+        match offset.try_into() {
+            Ok(offset) => {
+                let res = self.0.write(offset, data[0]);
+                if res.is_err() {
+                    debug!("Error writing to serial console: {:#?}", res.unwrap_err())
+                }
+            }
+            Err(_) => debug!("Invalid serial console read offset."),
+        }
+    }
+}
 /// Errors encountered during device operation.
 #[derive(Debug)]
 pub enum Error {
