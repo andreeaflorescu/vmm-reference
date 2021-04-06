@@ -81,7 +81,11 @@ const CMDLINE_START: u64 = 0x0002_0000;
 pub const DEFAULT_HIGH_RAM_START: u64 = 0x0010_0000;
 
 /// Default kernel command line.
+#[cfg(target_arch = "x86_64")]
 pub const DEFAULT_KERNEL_CMDLINE: &str = "i8042.nokbd reboot=t panic=1 pci=off";
+#[cfg(target_arch = "aarch64")]
+/// Default kernel command line.
+pub const DEFAULT_KERNEL_CMDLINE: &str = "reboot=t panic=1 pci=off";
 
 /// VMM memory related errors.
 #[derive(Debug)]
@@ -161,6 +165,8 @@ pub struct VMM {
     exit_handler: WrappedExitHandler,
     block_devices: Vec<Arc<Mutex<Block>>>,
     net_devices: Vec<Arc<Mutex<Net>>>,
+    // TODO: this should not be here; hack just to make an arm poc;
+    num_vcpus: u64,
 }
 
 // The `VmmExitHandler` is used as the mechanism for exiting from the event manager loop.
@@ -252,6 +258,7 @@ impl TryFrom<VMMConfig> for VMM {
             exit_handler: wrapped_exit_handler,
             block_devices: Vec::new(),
             net_devices: Vec::new(),
+            num_vcpus: config.vcpu_config.num as u64,
         };
 
         vmm.create_vcpus(&config.vcpu_config)?;
@@ -406,9 +413,10 @@ impl VMM {
     #[cfg(target_arch = "aarch64")]
     fn load_kernel(&mut self) -> Result<KernelLoaderResult> {
         let mut kernel_image = File::open(&self.kernel_cfg.path).map_err(Error::IO)?;
+        const AARCH64_KERNEL_OFFSET: u64 = 0x80000;
         Ok(linux_loader::loader::pe::PE::load(
             &self.guest_memory,
-            Some(GuestAddress(0x1_0000_0000)),
+            Some(GuestAddress(AARCH64_PHYS_MEM_START + AARCH64_KERNEL_OFFSET)),
             &mut kernel_image,
             None,
         )
@@ -427,9 +435,8 @@ impl VMM {
         // Register its interrupt fd with KVM. IRQ line 4 is typically used for serial port 1.
         // See more IRQ assignments & info: https://tldp.org/HOWTO/Serial-HOWTO-8.html
         self.vm.register_irqfd(&interrupt_evt, 4)?;
-
+        self.kernel_cfg.cmdline.push_str(" console=ttyS0");
         #[cfg(target_arch = "x86_64")] {
-            self.kernel_cfg.cmdline.push_str(" console=ttyS0");
             // Put it on the bus.
             // Safe to use expect() because the device manager is instantiated in new(), there's no
             // default implementation, and the field is private inside the VMM struct.
@@ -447,11 +454,10 @@ impl VMM {
         }
 
         #[cfg(target_arch = "aarch64")] {
-            self.kernel_cfg.cmdline.push_str(&format!("earlycon=uart,mmio,0x{:08x}", AARCH64_MMIO_BASE));
+            self.kernel_cfg.cmdline.push_str(&format!(" earlycon=uart,mmio,0x{:08x}", AARCH64_MMIO_BASE));
             let range = MmioRange::new(MmioAddress(AARCH64_MMIO_BASE), 0x1000).unwrap();
-            let mmio_cfg = MmioConfig { range, gsi: 4 };
             use vm_device::DeviceMmio;
-            self.device_mgr.lock().unwrap().register_mmio(range, serial.clone());
+            self.device_mgr.lock().unwrap().register_mmio(range, serial.clone()).unwrap();
         }
 
         // Hook it to event management.
@@ -605,8 +611,10 @@ impl VMM {
     fn setup_fdt(&mut self) {
         let mut fdt_offset: u64 = self.guest_memory.iter().map(|region| region.len()).sum();
         fdt_offset = fdt_offset - AARCH64_FDT_MAX_SIZE - 0x10000;
+        println!("======CMDLINE={}", self.kernel_cfg.cmdline.as_str());
         create_fdt(
-            DEFAULT_KERNEL_CMDLINE,
+            self.kernel_cfg.cmdline.as_str(),
+            self.num_vcpus.try_into().unwrap(),
             &self.guest_memory,
             fdt_offset,
             AARCH64_FDT_MAX_SIZE.try_into().unwrap(),

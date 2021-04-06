@@ -269,6 +269,7 @@ dependencies = [
 name = "vm-vcpu"
 version = "0.1.0"
 dependencies = [
+ "arch",
  "kvm-bindings",
  "kvm-ioctls",
  "libc",
