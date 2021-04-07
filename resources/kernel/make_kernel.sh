@@ -107,13 +107,16 @@ make_initramfs() {
 }
 
 # Usage: validate_kernel_format format
-# Prints the lowercase format name, if one of "elf" or "bzimage".
+# Prints the lowercase format name, if one of "elf", "bzimage" or "pe".
 # Exits with error if any other format is specified.
 validate_kernel_format() {
     format="$1"
 
     kernel_fmt=$(echo "$format" | tr '[:upper:]' '[:lower:]')
-    if [ "$kernel_fmt" != "elf" ] && [ "$kernel_fmt" != "bzimage" ]; then
+    valid_formats=("elf", "bzimage", "pe")
+    if [ "$kernel_fmt" != "elf" ] && \
+      [ "$kernel_fmt" != "bzimage" ] && \
+      [ "$kernel_fmt" != "pe" ]; then
         die "Invalid kernel binary format: $kernel_fmt."
     fi
     echo "$kernel_fmt"
@@ -142,6 +145,7 @@ kernel_binary() {
                 ;;
     bzimage)    echo "arch/x86/boot/bzImage"
                 ;;
+    pe)         echo "arch/arm64/boot/Image"
     esac
 }
 

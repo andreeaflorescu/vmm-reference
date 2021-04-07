@@ -34,10 +34,10 @@ KERNEL_FMT=
 KERNEL_BINARY_NAME=
 
 USAGE="
-Usage: $(basename $SOURCE) -f (elf|bzimage) [-j nprocs] [-k kernel] [-w workdir] [-c] [-h]
+Usage: $(basename $SOURCE) -f (elf|bzimage|pe) [-j nprocs] [-k kernel] [-w workdir] [-c] [-h]
 
 Options:
-  -f elf|bzimage    Kernel image format (either elf or bzimage).
+  -f elf|bzimage|pe Kernel image format (either elf, bzimage, or pe).
   -j nprocs         Number of CPUs to use for the kernel build.
   -k kernel         Name of the resulting kernel image. Has the '-halt' suffix if '-h' is passed.
   -w workdir        Working directory for the kernel build.
