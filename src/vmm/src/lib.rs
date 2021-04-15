@@ -50,7 +50,7 @@ use devices::virtio::block::{self, BlockArgs};
 use devices::virtio::net::{self, NetArgs};
 use devices::virtio::{Env, MmioConfig};
 
-use serial::SerialWrapper;
+use device::SerialWrapper;
 #[cfg(target_arch = "x86_64")]
 use vm_vcpu::vcpu::cpuid::filter_cpuid;
 use vm_vcpu::vcpu::VcpuState;
@@ -60,11 +60,11 @@ use vm_vcpu::vm::{self, ExitHandler, KvmVm, VmState};
 use arch::{create_fdt, AARCH64_PHYS_MEM_START, AARCH64_FDT_MAX_SIZE, AARCH64_MMIO_BASE};
 
 use std::convert::TryInto;
+use crate::device::{EventFdTrigger, SerialError};
 
 mod boot;
 mod config;
-
-mod serial;
+mod device;
 
 /// First address past 32 bits is where the MMIO gap ends.
 pub(crate) const MMIO_GAP_END: u64 = 1 << 32;
@@ -109,8 +109,8 @@ pub enum Error {
     BootParam(boot::Error),
     /// Error configuring the kernel command line.
     Cmdline(cmdline::Error),
-    /// Error setting up devices.
-    Device(serial::Error),
+    /// Error setting up the serial device.
+    SerialDevice(SerialError),
     /// Event management error.
     EventManager(event_manager::Error),
     /// I/O error.
@@ -426,7 +426,7 @@ impl VMM {
     // Create and add a serial console to the VMM.
     fn add_serial_console(&mut self) -> Result<()> {
         // Create the serial console.
-        let interrupt_evt = EventFd::new(libc::EFD_NONBLOCK).map_err(Error::IO)?;
+        let interrupt_evt = EventFdTrigger::new(EventFd::new(libc::EFD_NONBLOCK).map_err(Error::IO)?);
         let serial = Arc::new(Mutex::new(SerialWrapper(Serial::new(
             interrupt_evt.try_clone().map_err(Error::IO)?,
             stdout(),

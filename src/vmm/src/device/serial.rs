@@ -10,9 +10,11 @@ use vmm_sys_util::epoll::EventSet;
 
 use utils::debug;
 use vm_device::bus::MmioAddress;
+use vm_superio::serial::NoEvents;
+use crate::device::EventFdTrigger;
 
 /// Newtype for implementing `event-manager` functionalities.
-pub(crate) struct SerialWrapper<W: Write>(pub Serial<W>);
+pub struct SerialWrapper<W: Write>(pub Serial<EventFdTrigger, NoEvents, W>);
 
 impl<W: Write> MutEventSubscriber for SerialWrapper<W> {
     fn process(&mut self, events: Events, ops: &mut EventOps) {
@@ -141,10 +143,11 @@ mod tests {
     use vm_device::{bus::PioAddress, MutDevicePio};
     use vm_superio::Serial;
     use vmm_sys_util::eventfd::EventFd;
+    use crate::device::EventFdTrigger;
 
     #[test]
     fn test_invalid_data_len() {
-        let interrupt_evt = EventFd::new(libc::EFD_NONBLOCK).unwrap();
+        let interrupt_evt = EventFdTrigger::new(EventFd::new(libc::EFD_NONBLOCK).unwrap());
         let mut serial_console = SerialWrapper(Serial::new(interrupt_evt, sink()));
 
         // In case the data length is more than 1, the read succeeds as we send
