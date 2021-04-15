@@ -415,6 +415,7 @@ impl KvmVcpu {
             let mut interrupted_by_signal = false;
             match self.vcpu_fd.run() {
                 Ok(exit_reason) => {
+                    // println!("{:#?}", exit_reason);
                     match exit_reason {
                         VcpuExit::Shutdown | VcpuExit::Hlt => {
                             println!("Guest shutdown: {:?}. Bye!", exit_reason);
@@ -469,7 +470,7 @@ impl KvmVcpu {
                                 .mmio_read(MmioAddress(addr), data)
                                 .is_err()
                             {
-                                debug!("Failed to read from mmio");
+                                debug!("Failed to read from mmio addr={} data={:#?}", addr, data);
                             }
                         }
                         VcpuExit::MmioWrite(addr, data) => {
