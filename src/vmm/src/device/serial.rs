@@ -93,6 +93,7 @@ impl<W: Write> MutDeviceMmio for SerialWrapper<W> {
     fn mmio_read(&mut self, base: MmioAddress, offset: u64, data: &mut [u8]) {
         // TODO: this function can't return an Err, so we'll mark error conditions
         // (data being more than 1 byte, offset overflowing an u8) with logs & metrics.
+        // println!("blea");
         if data.len() != 1 {
             debug!(
                 "Serial console invalid data length on PIO read: {}",

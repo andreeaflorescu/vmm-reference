@@ -40,7 +40,7 @@ use vm_device::bus::{MmioAddress, MmioRange, BusManager};
 use vm_device::device_manager::{IoManager, MmioManager};
 use vm_device::resources::Resource;
 use vm_memory::{GuestAddress, GuestMemory, GuestMemoryMmap, GuestMemoryRegion};
-use vm_superio::Serial;
+use vm_superio::{Serial};
 use vmm_sys_util::{epoll::EventSet, eventfd::EventFd, terminal::Terminal};
 
 #[cfg(target_arch = "x86_64")]
@@ -60,7 +60,7 @@ use vm_vcpu::vm::{self, ExitHandler, KvmVm, VmState};
 use arch::{create_fdt, AARCH64_PHYS_MEM_START, AARCH64_FDT_MAX_SIZE, AARCH64_MMIO_BASE};
 
 use std::convert::TryInto;
-use crate::device::{EventFdTrigger, SerialError};
+use crate::device::{EventFdTrigger, SerialError, RTCWrapper};
 
 mod boot;
 mod config;
@@ -263,6 +263,8 @@ impl TryFrom<VMMConfig> for VMM {
 
         vmm.create_vcpus(&config.vcpu_config)?;
         vmm.add_serial_console()?;
+        #[cfg(target_arch = "aarch64")]
+        vmm.add_rtc_device();
 
         // Adding the virtio devices. We'll come up with a cleaner abstraction for `Env`.
 
@@ -466,6 +468,15 @@ impl VMM {
         Ok(())
     }
 
+    #[cfg(target_arch = "aarch64")]
+    fn add_rtc_device(&mut self) {
+        use crate::device::rtc::RTC;
+        let rtc = Arc::new(Mutex::new(RTCWrapper(RTC::new())));
+        let range = MmioRange::new(MmioAddress(AARCH64_MMIO_BASE + 0x1000), 0x1000).unwrap();
+        use vm_device::DeviceMmio;
+        self.device_mgr.lock().unwrap().register_mmio(range, rtc.clone()).unwrap();
+    }
+
     // All methods that add a virtio device use hardcoded addresses and interrupts for now, and
     // only support a single device. We need to expand this, but it looks like a good match if we
     // can do it after figuring out how to better separate concerns and make the VMM agnostic of
@@ -508,7 +519,7 @@ impl VMM {
     fn add_net_device(&mut self, cfg: &NetConfig, cmdline: &mut cmdline::Cmdline) -> Result<()> {
         let mem = Arc::new(self.guest_memory.clone());
 
-        let range = MmioRange::new(MmioAddress(MMIO_GAP_START + 0x1000), 0x1000).unwrap();
+        let range = MmioRange::new(MmioAddress(MMIO_GAP_START + 0x2000), 0x1000).unwrap();
         let mmio_cfg = MmioConfig { range, gsi: 6 };
 
         let mut guard = self.device_mgr.lock().unwrap();
