@@ -40,7 +40,7 @@ use vm_device::bus::{MmioAddress, MmioRange, BusManager};
 use vm_device::device_manager::{IoManager, MmioManager};
 use vm_device::resources::Resource;
 use vm_memory::{GuestAddress, GuestMemory, GuestMemoryMmap, GuestMemoryRegion};
-use vm_superio::{Serial};
+use vm_superio::{Serial, RTC};
 use vmm_sys_util::{epoll::EventSet, eventfd::EventFd, terminal::Terminal};
 
 #[cfg(target_arch = "x86_64")]
@@ -470,7 +470,6 @@ impl VMM {
 
     #[cfg(target_arch = "aarch64")]
     fn add_rtc_device(&mut self) {
-        use crate::device::rtc::RTC;
         let rtc = Arc::new(Mutex::new(RTCWrapper(RTC::new())));
         let range = MmioRange::new(MmioAddress(AARCH64_MMIO_BASE + 0x1000), 0x1000).unwrap();
         use vm_device::DeviceMmio;
